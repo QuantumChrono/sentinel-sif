@@ -28,3 +28,6 @@ Cross-lane requests (Days 2–4) also land here: when a lane needs a change insi
 ## Done
 
 *(move confirmed items here with a date — don't delete)*
+- [ ] **(Day 1)** Fix `backend/.env`: it currently holds the three `NEXT_PUBLIC_*` frontend variables (a copy of `frontend/.env.local`) instead of the four keys in `backend/.env.example`. Fill in the real `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` from the Supabase dashboard (service-role key, **not** the anon key), plus `GEMINI_API_KEY` and `FRONTEND_ORIGINS`. The backend cannot reach the DB until this is done, and Block 2's insert/select verification cannot be run.
+- [ ] **(Day 1)** Run `backend/schema.sql` in the Supabase SQL Editor, then run the six verification queries and the cleanup block from the Block 2 hand-off. Confirm each returns a row before Block 2 is marked done.
+- [ ] **(Day 1)** Confirm the 8 seeded site names really are OIL operating areas against an OIL source. Their coordinates are OSM-verified; the operatorship claim is not (web search was down when the seed was written).

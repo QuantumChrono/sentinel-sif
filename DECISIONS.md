@@ -62,3 +62,15 @@ Decision: removed all five create-next-app SVGs plus `app/favicon.ico`, then rem
 Context: Block 1 requires deleting every piece of demo content; nothing in the current design serves a static asset.
 Alternatives: keeping an empty `public/` "since we'll need it eventually".
 Rationale: an empty directory is speculative scaffolding, which `AGENTS.md` bans. Next.js recreates the convention the moment a real asset exists; a favicon or logo can add it back in one line when there is an actual file to put there.
+
+### [Day 1 / Block 2] `on delete cascade` on the three report-child foreign keys — 2026-08-24
+Decision: `classifications.report_id`, `iogp_tags.report_id`, and `precursors.report_id` are declared `references reports (id) on delete cascade`. The other two FKs — `reports.site_id`, `users.site_id`, `classifications.reviewed_by` — get plain `references` with no cascade.
+Context: `PRD.md` § Database schema specifies the columns and marks them `fk` but says nothing about delete behaviour, so a choice had to be made rather than defaulted silently.
+Alternatives: plain `references` everywhere (deleting a report then fails on its own children, or leaves orphan classifications that every analytics query has to defend against); `on delete cascade` everywhere (deleting one user would delete the classifications they reviewed, destroying real review history).
+Rationale: a classification, tag set, or precursor span has no meaning without its report — it is child data, so it follows the parent. A site or a reviewing user is a separate entity that reports merely point at; deleting one must never silently delete safety records. No column was added, renamed, or retyped, so this needs no `PRD.md` deviation.
+
+### [Day 1 / Block 2] `supabase==2.31.0` added to backend requirements — 2026-08-24
+Decision: added the one dependency `supabase==2.31.0` (exact pin, latest on PyPI as of 2026-08-24), pulling `postgrest`, `supabase-auth`, `storage3`, `realtime`, `supabase-functions` at the same version.
+Context: `PRD.md` § Tech stack fixes Supabase as DB/Auth; `backend/database.py` needs the official client.
+Alternatives: raw `psycopg` against the Postgres connection string (loses Supabase Auth integration that Block 7 needs, and means hand-writing SQL in every route); an ORM such as SQLAlchemy (`AGENTS.md` bans speculative abstraction, and the block brief explicitly rules out an ORM).
+Rationale: it is the client the platform we already committed to ships, and it keeps Block 7's auth work on the same library instead of bolting a second DB path on later.

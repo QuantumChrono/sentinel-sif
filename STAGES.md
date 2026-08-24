@@ -11,13 +11,19 @@ Status marks: `[ ]` not started · `[~]` in progress · `[x]` done and verified.
 ```
 DAY:        Day 1 — Baseline build
 MODE:       A (sequential, solo)
-ACTIVE:     Block 2 — database schema
+ACTIVE:     Block 2 — database schema (code done, DB-side verification blocked)
 NEXT:       Block 3 — dataset (background job), then Block 4 — preprocessing
 INTEGRATOR: Swayam (sole owner of merges and FROZEN files)
 NOTE:       Block 1 scaffold verified. Its second line (governance files *committed*)
             is still open — the files exist at repo root but are untracked; no commit
             has been made. Local backend verification uses port 8010, not 8000: an
             unrelated process holds 8000 on this machine (see AUDIT.md).
+            Block 2: schema.sql + database.py written and parse-checked, but NOT yet
+            run against Supabase. Blocked on backend/.env, which holds the frontend
+            NEXT_PUBLIC_* vars instead of SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY
+            (AUDIT.md, DIY.md). Do not mark Block 2 [x] until a human runs the SQL
+            and the six verification queries. Backend lint has never run: ruff is
+            not installed (AUDIT.md).
 ```
 
 Update this block on every day change, lane change, and block completion. It is the first thing any agent reads after a context clear.
@@ -50,9 +56,9 @@ Work blocks top to bottom. Do not start a later block's deliverable early. Two b
 - Exit: `npm run dev` serves a page; `uvicorn main:app` returns `{"status":"ok"}` on `/health`
 
 ## Block 2 — Database schema
-- [ ] Supabase tables exactly matching `PRD.md` § Database schema — `sites`, `reports`, `classifications`, `iogp_tags`, `precursors`, `users`. Any deviation needs a `DECISIONS.md` entry.
-- [ ] 6–8 real-sounding `sites` rows seeded (Assam/Rajasthan OIL-style names, real lat/long)
-- [ ] Manual insert + select verified against every table
+- [~] Supabase tables exactly matching `PRD.md` § Database schema — `sites`, `reports`, `classifications`, `iogp_tags`, `precursors`, `users`. Written in `backend/schema.sql`, column-for-column against the PRD (5/4/8/7/4/6 columns), parse-checked against the Postgres dialect. **Not yet executed against Supabase.**
+- [x] 8 `sites` rows seeded — Assam/Rajasthan OIL-area names, every coordinate looked up in OpenStreetMap, none invented; 3 candidate names dropped for having no geocode result (`AUDIT.md`)
+- [ ] Manual insert + select verified against every table — **blocked on `backend/.env` (`DIY.md`)**
 - Do NOT: add columns "we'll probably need," add indexes before a measured slow query, enable RLS yet
 - Exit: every table accepts an insert and returns it; schema file committed as `backend/schema.sql`
 
