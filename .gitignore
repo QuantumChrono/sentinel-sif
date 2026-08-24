@@ -1,0 +1,28 @@
+# Node & Frontend
+node_modules/
+.next/
+dist/
+
+# Python & Backend
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Environment Variables (CRITICAL)
+.env
+.env.local
+.env.*
+
+# Data & Models (Keep history clean)
+data/**/*.csv
+data/**/*.json
+data/processed/
+data/sample/
+data/test/
+*.pt
+*.bin
+*.safetensors
+model_weights/
+
+# Do NOT ignore .claude, .agent, or *.md
