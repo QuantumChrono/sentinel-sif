@@ -9,11 +9,15 @@ Status marks: `[ ]` not started · `[~]` in progress · `[x]` done and verified.
 ## Current Position
 
 ```
-DAY:        Day 0 — Setup
+DAY:        Day 1 — Baseline build
 MODE:       A (sequential, solo)
-ACTIVE:     Block 0 — accounts, credentials, repo
-NEXT:       Day 1 Block 1 — scaffold
+ACTIVE:     Block 2 — database schema
+NEXT:       Block 3 — dataset (background job), then Block 4 — preprocessing
 INTEGRATOR: Swayam (sole owner of merges and FROZEN files)
+NOTE:       Block 1 scaffold verified. Its second line (governance files *committed*)
+            is still open — the files exist at repo root but are untracked; no commit
+            has been made. Local backend verification uses port 8010, not 8000: an
+            unrelated process holds 8000 on this machine (see AUDIT.md).
 ```
 
 Update this block on every day change, lane change, and block completion. It is the first thing any agent reads after a context clear.
@@ -40,8 +44,8 @@ The Day 1 baseline is not a prototype to be replaced. It is the reference implem
 Work blocks top to bottom. Do not start a later block's deliverable early. Two blocks run as background wall-clock jobs (dataset generation, model training) — the timeline deliberately overlaps them with hands-on work; that overlap is the reason one day is enough.
 
 ## Block 1 — Scaffold
-- [ ] `frontend/` (Next.js App Router + TS + Tailwind), `backend/` (FastAPI), `.env.example` in both, root `.gitignore`
-- [ ] Governance files (`PRD.md`, `STAGES.md`, `AGENTS.md`, `CLAUDE.md`, `DECISIONS.md`, `AUDIT.md`, `DIY.md`) committed at repo root
+- [x] `frontend/` (Next.js App Router + TS + Tailwind), `backend/` (FastAPI), `.env.example` in both, root `.gitignore`
+- [~] Governance files (`PRD.md`, `STAGES.md`, `AGENTS.md`, `CLAUDE.md`, `DECISIONS.md`, `AUDIT.md`, `DIY.md`) committed at repo root — all present at root, all still untracked; needs Swayam's go-ahead for the first commit
 - Do NOT: install ML libraries, write business logic, touch Supabase
 - Exit: `npm run dev` serves a page; `uvicorn main:app` returns `{"status":"ok"}` on `/health`
 

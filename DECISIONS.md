@@ -50,3 +50,15 @@ Decision: Day 1 Block 5 ships deliberate interim implementations behind the thre
 Context: DistilBERT fine-tuning is wall-clock-bound (dataset generation plus two training runs) and cannot be compressed by working faster. Blocking the frontend on it would leave most of Day 1 idle.
 Alternatives: waiting for real weights before building any UI (serializes the day, likely misses the baseline target); shipping the interim version as a permanent fallback (dishonest under demo, and a hidden second code path).
 Rationale: it decouples wall-clock-bound training from hands-on UI work, which is what makes a one-day baseline arithmetically possible. The risk — interim code surviving into the demo — is controlled by making deletion an explicit Block 8 exit criterion verified with grep, not a good intention. Under no circumstances is the interim path reachable at demo time.
+
+### [Day 1 / Block 1] Next.js pinned to 15.5.23, not the create-next-app default — 2026-08-24
+Decision: `create-next-app@15.5.4` scaffolded `next@15.5.4`; immediately pinned up to `next@15.5.23` (and `eslint-config-next` to match). All frontend and backend dependencies pinned to exact versions, no carets.
+Context: `npm audit` on the fresh scaffold reported 1 critical + 2 high advisories, the critical being RCE in the React flight protocol (GHSA-9qr9-h5gf-34mp).
+Alternatives: staying on 15.5.4 (ships a known critical RCE); jumping to `next@16.3.2`, which is what `npm audit fix --force` wants (major-version change to a stack `PRD.md` fixes as "Next.js App Router", on day 1 of a 5-day build).
+Rationale: 15.5.23 is the patched release inside the same minor, so it clears the critical without substituting the stack. Exact pins are required by `AGENTS.md` § Coding standards and keep every teammate's Days 2–4 install identical.
+
+### [Day 1 / Block 1] Frontend `public/` directory deleted outright — 2026-08-24
+Decision: removed all five create-next-app SVGs plus `app/favicon.ico`, then removed the now-empty `public/` directory rather than leaving it as an empty placeholder.
+Context: Block 1 requires deleting every piece of demo content; nothing in the current design serves a static asset.
+Alternatives: keeping an empty `public/` "since we'll need it eventually".
+Rationale: an empty directory is speculative scaffolding, which `AGENTS.md` bans. Next.js recreates the convention the moment a real asset exists; a favicon or logo can add it back in one line when there is an actual file to put there.
