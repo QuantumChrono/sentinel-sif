@@ -6,6 +6,9 @@
     "skipLibCheck": true,
     "strict": true,
     "noEmit": true,
+    // The span self-check runs under plain `node`, which requires the extension in a relative
+    // ESM import. `noEmit` is on, so nothing is ever emitted from these specifiers.
+    "allowImportingTsExtensions": true,
     "esModuleInterop": true,
     "module": "esnext",
     "moduleResolution": "bundler",

@@ -9,21 +9,33 @@ Status marks: `[ ]` not started · `[~]` in progress · `[x]` done and verified.
 ## Current Position
 
 ```
-DAY:        Day 1 — Baseline build
+DAY:        Day 1 — Baseline
 MODE:       A (sequential, solo)
-ACTIVE:     Block 2 — database schema (code done, DB-side verification blocked)
-NEXT:       Block 3 — dataset (background job), then Block 4 — preprocessing
+ACTIVE:     Block 7 — Frontend. Step 7A (foundation + hero flow) BUILT, NOT SIGNED OFF.
+            Shipped: `lib/api_client.ts` (single HTTP layer, 8 typed functions, FROZEN),
+            `lib/supabase_client.ts` (anon key only), `lib/user_role.ts` (privilege rule),
+            `lib/precursor_spans.ts` (span slicing), `middleware.ts` (auth boundary),
+            `app/layout.tsx` (FROZEN) + header, login, `app/intake/`, `app/reports/[id]/`,
+            `app/report_result.tsx` (one renderer, both pages). New: `backend/routes/sites.py`
+            + 2 lines in FROZEN `main.py` — NEEDS RETROACTIVE SIGN-OFF (DIY.md).
+            VERIFIED: tsc / lint / build clean; span check 20/20; role check 16/16;
+            unauthenticated redirects measured with curl (all protected routes 307 → /login).
+            NOT VERIFIED, exit criteria NOT met: no real POST /reports, GET /reports/{id} or
+            GET /sites has ever run — `backend/.env` still lacks the service-role key, so the
+            backend cannot reach the database (unchanged blocker, DIY.md). Both-roles redirect
+            is unproven end to end: no account has `app_metadata.role` set, so every real
+            session lands on /intake. `hse_manager` → /dashboard is a 404 until 7B.
+            See AUDIT.md 2026-08-26 (7 entries).
+REMAINING:  Step 7B — Dashboard (KPI cards, IOGP chart, Site/Activity Density Ranking table —
+            the priority screen) and Review Queue. Both deliberately out of 7A's scope.
+BLOCKED:    Block 3 — the 1,200-row generation run has NOT been started. Groq free tier is
+            ~200,000 tokens/day/model against ~1.9M needed, so this is multi-day or needs a
+            paid tier. `scripts/split_dataset.py` handles a partial checkpoint, so Lane A can
+            be fed from however many rows exist. See AUDIT.md 2026-08-25.
+            Block 6 training stays blocked behind the dataset.
+NEXT:       Fix `backend/.env` (DIY.md) — it gates verification of 7A AND every DB path in
+            Block 5. Then Step 7B.
 INTEGRATOR: Swayam (sole owner of merges and FROZEN files)
-NOTE:       Block 1 scaffold verified. Its second line (governance files *committed*)
-            is still open — the files exist at repo root but are untracked; no commit
-            has been made. Local backend verification uses port 8010, not 8000: an
-            unrelated process holds 8000 on this machine (see AUDIT.md).
-            Block 2: schema.sql + database.py written and parse-checked, but NOT yet
-            run against Supabase. Blocked on backend/.env, which holds the frontend
-            NEXT_PUBLIC_* vars instead of SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY
-            (AUDIT.md, DIY.md). Do not mark Block 2 [x] until a human runs the SQL
-            and the six verification queries. Backend lint has never run: ruff is
-            not installed (AUDIT.md).
 ```
 
 Update this block on every day change, lane change, and block completion. It is the first thing any agent reads after a context clear.
@@ -50,15 +62,15 @@ The Day 1 baseline is not a prototype to be replaced. It is the reference implem
 Work blocks top to bottom. Do not start a later block's deliverable early. Two blocks run as background wall-clock jobs (dataset generation, model training) — the timeline deliberately overlaps them with hands-on work; that overlap is the reason one day is enough.
 
 ## Block 1 — Scaffold
-- [x] `frontend/` (Next.js App Router + TS + Tailwind), `backend/` (FastAPI), `.env.example` in both, root `.gitignore`
-- [~] Governance files (`PRD.md`, `STAGES.md`, `AGENTS.md`, `CLAUDE.md`, `DECISIONS.md`, `AUDIT.md`, `DIY.md`) committed at repo root — all present at root, all still untracked; needs Swayam's go-ahead for the first commit
+- [ ] `frontend/` (Next.js App Router + TS + Tailwind), `backend/` (FastAPI), `.env.example` in both, root `.gitignore`
+- [ ] Governance files (`PRD.md`, `STAGES.md`, `AGENTS.md`, `CLAUDE.md`, `DECISIONS.md`, `AUDIT.md`, `DIY.md`) committed at repo root
 - Do NOT: install ML libraries, write business logic, touch Supabase
 - Exit: `npm run dev` serves a page; `uvicorn main:app` returns `{"status":"ok"}` on `/health`
 
 ## Block 2 — Database schema
-- [~] Supabase tables exactly matching `PRD.md` § Database schema — `sites`, `reports`, `classifications`, `iogp_tags`, `precursors`, `users`. Written in `backend/schema.sql`, column-for-column against the PRD (5/4/8/7/4/6 columns), parse-checked against the Postgres dialect. **Not yet executed against Supabase.**
-- [x] 8 `sites` rows seeded — Assam/Rajasthan OIL-area names, every coordinate looked up in OpenStreetMap, none invented; 3 candidate names dropped for having no geocode result (`AUDIT.md`)
-- [ ] Manual insert + select verified against every table — **blocked on `backend/.env` (`DIY.md`)**
+- [ ] Supabase tables exactly matching `PRD.md` § Database schema — `sites`, `reports`, `classifications`, `iogp_tags`, `precursors`, `users`. Any deviation needs a `DECISIONS.md` entry.
+- [ ] 6–8 real-sounding `sites` rows seeded (Assam/Rajasthan OIL-style names, real lat/long)
+- [ ] Manual insert + select verified against every table
 - Do NOT: add columns "we'll probably need," add indexes before a measured slow query, enable RLS yet
 - Exit: every table accepts an insert and returns it; schema file committed as `backend/schema.sql`
 
@@ -71,19 +83,31 @@ Work blocks top to bottom. Do not start a later block's deliverable early. Two b
 - Exit: record counts, class balance, and per-rule tag distribution logged in `AUDIT.md` with real numbers
 
 ## Block 4 — Preprocessing (hands-on, while Block 3 runs)
-- [ ] `backend/preprocessing/` — acronym expansion, spellcheck, Hinglish normalization, in that order
-- [ ] Graceful degradation: low normalization confidence returns the original text and flags `language_detected`. Never throws, never silently corrupts input.
-- [ ] Run against 10 hand-picked messy samples, log before/after in `AUDIT.md`
+- [x] `backend/preprocessing/` — acronym expansion, spellcheck, Hinglish normalization, in that order
+- [x] Graceful degradation: low normalization confidence returns the original text and flags `language_detected`. Never throws, never silently corrupts input.
+- [x] Run against 10 hand-picked messy samples, log before/after in `AUDIT.md`
 - Do NOT: import any transformer model here, make network calls, guess at OIL acronyms without noting them as unverified
 - Exit: 10/10 samples processed without exception; garbage input returns something safe
+- **[x] EXIT MET 2026-08-25:** 10/10 processed, no exceptions; 8 classes of garbage input all
+  return a shaped dict; self-check 45/45; ruff clean. Two known limitations logged in
+  `AUDIT.md` rather than fixed: output is translationese (the collision rule leaves Hindi
+  function words in place on purpose), and `CONFIDENCE_FLOOR` is untuned because 0 of 10 real
+  samples degraded.
 
 ## Block 5 — API contract freeze + inference interface
-- [ ] Pydantic request/response models for all 7 `PRD.md` endpoints in `backend/schemas.py` — **this file becomes FROZEN for Days 2–4**
-- [ ] Inference interface signatures fixed now, implementation swappable later:
+- [x] Pydantic request/response models for all 7 `PRD.md` endpoints in `backend/schemas.py` — **this file becomes FROZEN for Days 2–4**
+- [x] Inference interface signatures fixed now, implementation swappable later:
       `classify_sif(text) -> (bool, float)` · `tag_iogp_rules(text) -> list[(rule_name, float)]` · `extract_precursors(text) -> list[(entity_type, entity_text, span_start, span_end)]`
-- [ ] Day-1-only interim implementations behind those exact signatures so the frontend can be built against real response shapes before weights exist
+- [x] Day-1-only interim implementations behind those exact signatures so the frontend can be built against real response shapes before weights exist
 - Do NOT: build the 7 endpoints twice (no separate mock-JSON pass — the frozen Pydantic contract *is* the contract), change a signature after the frontend starts consuming it
 - Exit: `POST /api/v1/reports` returns a fully-shaped real response, written to all tables, with the interim implementation
+- **[x] EXIT MET 2026-08-25, with a stated caveat:** `POST /api/v1/reports` returns a fully-shaped
+  `ReportDetail` (status `processed`, verdict + confidence, 5 IOGP tags, 6 precursor spans) and
+  writes all four tables — verified through the HTTP layer against a **stubbed** Supabase client,
+  because `backend/.env` lacks the service-role key (DIY.md, blocking). Inference self-check
+  21/21; preprocessing 45/45; `ruff` clean; all 7 endpoints present in the OpenAPI spec. The span
+  invariant `text[span_start:span_end] == entity_text` holds on all 38 test inputs, 0 mismatches.
+  Interim bodies carry `INTERIM_LANE_A` (6 occurrences, 2 per module) for Lane A's Day 2 deletion.
 - **Required `DECISIONS.md` entry:** interim implementation is scaffolding, deleted in Block 8, never a silent runtime fallback
 
 ## Block 6 — Training (background job starts here)
@@ -94,9 +118,16 @@ Work blocks top to bottom. Do not start a later block's deliverable early. Two b
 - Exit: real held-out metrics (accuracy, precision, recall, confusion matrix, per-rule F1) logged in `AUDIT.md` — no rounding up, negative results logged too
 
 ## Block 7 — Frontend (hands-on, while Block 6 runs)
-- [ ] Supabase Auth + role-based redirect: `hse_manager` → Dashboard, `site_supervisor` → Intake. Verify both roles actually land correctly.
-- [ ] Intake page — submit renders result **inline, no navigation**. This is the demo's hero interaction; it must feel instant.
-- [ ] Report Detail "Magic View" — color-coded entity highlighting from real spans, verdict badge, confidence, IOGP chips
+- [~] Supabase Auth + role-based redirect: `hse_manager` → Dashboard, `site_supervisor` → Intake. Verify both roles actually land correctly.
+      **Rule verified (`lib/role_check.ts` 16/16) and the unauthenticated path measured with curl.
+      NOT verified with real accounts: none has `app_metadata.role` set (DIY.md), so every real
+      session reads "no role set" and lands on /intake. Stays `[~]` until both roles are seen landing.**
+- [~] Intake page — submit renders result **inline, no navigation**. This is the demo's hero interaction; it must feel instant.
+      **Built, all five states explicit. Only "empty input blocked" is exercised — the backend cannot
+      reach the database, so no real submit has run (AUDIT.md 2026-08-26).**
+- [~] Report Detail "Magic View" — color-coded entity highlighting from real spans, verdict badge, confidence, IOGP chips
+      **Built; span slicing verified 20/20 including non-BMP, overlapping and malformed offsets. Never
+      rendered from a real API response. Confirm/Override will 422 until `users` is seeded (DIY.md).**
 - [ ] Dashboard — KPI cards, IOGP distribution chart, and the **Site/Activity Density Ranking table**. The ranking table is the literal expected-outcome line of the problem statement; it is the priority screen, not an afterthought. Verify its ordering against a hand-computed expected order on a small known dataset.
 - [ ] Review Queue — a deliberately ambiguous report must route here instead of auto-publishing
 - Do NOT: build the Trends page (Tier 2, Day 3), mock any API response, hand-write a span offset

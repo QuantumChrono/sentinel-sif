@@ -74,3 +74,201 @@ Decision: added the one dependency `supabase==2.31.0` (exact pin, latest on PyPI
 Context: `PRD.md` § Tech stack fixes Supabase as DB/Auth; `backend/database.py` needs the official client.
 Alternatives: raw `psycopg` against the Postgres connection string (loses Supabase Auth integration that Block 7 needs, and means hand-writing SQL in every route); an ORM such as SQLAlchemy (`AGENTS.md` bans speculative abstraction, and the block brief explicitly rules out an ORM).
 Rationale: it is the client the platform we already committed to ships, and it keeps Block 7's auth work on the same library instead of bolting a second DB path on later.
+
+### [Day 1 / Block 3] Gemini reached through the OpenAI-compatible endpoint, no new dependency — 2026-08-25
+Decision: `scripts/localize_dataset.py` calls Gemini via the already-installed `openai==2.20.0` client pointed at `https://generativelanguage.googleapis.com/v1beta/openai/`, default model `gemini-flash-latest`.
+Context: the human picked Gemini for the offline localization key (`DIY.md`, Day 0) and named `gemini-flash-latest`. `openai`, `pandas`, `python-dotenv` and `tqdm` are already present in the environment.
+Alternatives: adding `google-genai` as a dependency (a new pin, a second SDK idiom in the repo, for one offline script); raw `requests` against the REST API (hand-rolling retry, JSON-mode and usage parsing that the SDK already does).
+Rationale: `AGENTS.md` requires a rationale for any new dependency and prefers not adding one at all. Google ships an OpenAI-compatible surface specifically for this, so zero new pins buys the same call. If the endpoint ever misbehaves, swapping in `google-genai` touches one `client = ...` line.
+
+### [Day 1 / Block 3] The LLM never sees or decides `sif_potential` — 2026-08-25
+Decision: the prompt contains no label, no mention of SIF, and no severity language. Python assigns `sif_potential` from `EventTitle`/`NatureTitle` before any call is made; the record carries the label plus a `sif_rule_hits` field (`A1`/`A2`/`A3`/`B`) naming which test fired.
+Context: `STAGES.md` Block 3 forbids letting the generating LLM grade its own labels, and `LABELING_RULE.md` § 2 derives labels only from OSHA's structured coding so they survive the rewrite.
+Alternatives: asking the model to also classify (a self-graded label, and the exact thing a judge would attack); passing the label as context to "help" the rewrite (invites the model to dramatise positives and soften negatives, which would leak the label into prose style and let the classifier learn the tell instead of the hazard).
+Rationale: the two jobs are kept mechanically separate, not just conventionally. `sif_rule_hits` means every row in the dataset can be traced to the clause that labelled it without re-running anything.
+
+### [Day 1 / Block 3] Noise tiers are a shuffled fixed list, not a per-row dice roll — 2026-08-25
+Decision: `assign_noise_tiers` builds exactly `round(n*0.10)` heavy, `round(n*0.30)` moderate, remainder clean, then shuffles with a seeded RNG. For 1,000 rows that is exactly 100/300/600, asserted in `--verify-rule`.
+Context: `PRD.md` states ~60% clean / 30% moderate / 10% heavy and calls it "not uniform".
+Alternatives: `random.choices` with weights per row — the obvious approach, but at n=20 it plausibly yields 4 heavy or 0 heavy, and the review sample is the one place the distribution is checked by eye.
+Rationale: the tier is later used to measure accuracy per noise level, so the denominator should be exact rather than approximately right. Seeded so a resumed run reassigns the same tier to the same OSHA ID.
+
+### [Day 1 / Block 3] Python computes precursor spans; the LLM only quotes — 2026-08-25
+Decision: the model returns each precursor as a verbatim substring of its own `localized_text`; `find_span` locates it with `str.find` and emits `{text, start, end}`. A quote that is not found is dropped to `null` rather than stored with a guessed offset. `--verify-rule` asserts the span slices back to its own text.
+Context: `PRD.md` § Labeling schema needs `precursor_*` as text spans, and Block 7's "Magic View" highlights `raw_text[start:end]`. `STAGES.md` Block 7 forbids hand-writing a span offset.
+Alternatives: asking the model for integer offsets directly (LLMs cannot count characters reliably — off-by-a-few offsets would silently mis-highlight the hero screen); fuzzy-matching a paraphrase back onto the text (invents a span the narrative does not contain).
+Rationale: a wrong offset is worse than a missing one — a missing precursor shows nothing, a wrong one highlights the wrong words in the demo's explainability screen. One case-insensitive retry is allowed; anything beyond that returns `null`.
+
+### [Day 1 / Block 3] Review sample is 50/50 by class, and is not the full-run sampling strategy — 2026-08-25
+Decision: `--sample 20` draws 10 positives and 10 negatives, seeded. The full `--count` run uses the same function, so its balance is also 50/50 unless changed.
+Context: `LABELING_RULE.md` § 7 is explicit that 66.3% is a frame statistic and that the training balance is a separate decision, deliberately deferred (§ 10). The human must review both classes to judge whether labels look wrong.
+Alternatives: sampling at the frame's natural 66.3% (a 20-row review would show ~13 positives and ~7 negatives — fewer negatives to inspect, and a reviewer sees less of the boundary).
+Rationale: for a 20-row eyeball review, equal classes maximise what the reviewer can catch. The 2,000–3,000-row balance is still an open decision and gets its own entry before the full run — this entry does not settle it.
+
+### [Day 1 / Block 3] Out-of-canon IOGP rules are dropped, never renamed onto the canonical 9 — 2026-08-25
+Decision: any `iogp_rules` value the model returns that is not an exact string match to `PRD.md`'s canonical 9 is discarded and recorded separately in `iogp_rules_rejected`.
+Context: `PRD.md` § Glossary states the 9 rules must not be renamed or merged.
+Alternatives: fuzzy-mapping near-misses ("Working at Heights", "Line of Fire Awareness") onto the canonical name — silently invents a mapping rule nobody wrote and would let a tenth category in through a spelling variant.
+Rationale: keeping the rejects in the record makes prompt drift visible during the review instead of hiding it behind a normalizer. If a variant recurs often, the prompt gets fixed, not the data.
+
+### [Day 1 / Block 3] Model pinned to `gemini-3.7-flash`; client gets an explicit timeout and no SDK-level retries — 2026-08-25
+Decision: `--model` defaults to `gemini-3.7-flash` (the human's specified id, verified to resolve by a real call). The client is constructed `timeout=60.0, max_retries=0`.
+Context: the previous default `gemini-flash-latest` was unverified and is not a valid id. Separately, measured call latency on this endpoint ranges 10-31s with occasional indefinite stalls and transient 503s.
+Alternatives: the SDK's 600s default timeout (a stall becomes an apparent hang, which is what the first Ctrl+C actually was); leaving `max_retries` at the SDK default of 2 (then the script's visible 5-attempt loop is really up to 15 requests, which on a 20-request daily quota is fatal and invisible).
+Rationale: one retry authority, in the script, where the log line shows it. 60s is above the slowest observed success (31s) and well below a hang.
+
+### [Day 1 / Block 3] A per-day quota error is not retried — 2026-08-25
+Decision: `localize_row` re-raises immediately when the error text contains `PerDay`, skipping the backoff loop.
+Context: the free tier caps `gemini-3.7-flash` at 20 requests per day per project. The generic 5-attempt backoff treated that as transient and spent 4 extra requests per row against an already-exhausted budget.
+Alternatives: sleeping on the server's `retryDelay` (7-59s in the observed bodies — those values are the *per-minute* hint and do not clear a daily cap, so the run would sleep and still fail); dropping the retry loop entirely (loses genuine per-minute and 503 recovery, which is the case it was built for).
+Rationale: the `.jsonl` checkpoint already makes a daily cap survivable — the row resumes tomorrow. Burning requests to confirm a quota that cannot clear within the run is strictly worse than failing the row now.
+
+### [Day 1 / Block 3] `scripts/requirements.txt` kept separate from `backend/requirements.txt` — 2026-08-25
+Decision: added `scripts/requirements.txt` pinning the three packages this script actually imports (`pandas==2.2.3`, `openai==2.20.0`, `python-dotenv==1.2.1`). The script was run against the global Python 3.11.9 interpreter, which already has all three; `backend/.venv` was left untouched.
+Context: `backend/.venv` exists and holds only the five `backend/requirements.txt` pins — it has `python-dotenv` but no `pandas` and no `openai`. Something had to give: either the venv gains two heavy packages or the script runs elsewhere.
+Alternatives: installing `pandas` + `openai` into `backend/.venv` (the deployed backend must not carry an LLM client or pandas — Block 9 deploys that env to HF Spaces, and `AGENTS.md` forbids dependencies without a rationale; this script is offline-only and never imported by `backend/`); a third venv just for `scripts/` (more environment management than a once-per-project script justifies).
+Rationale: the dependency set is now recorded and reproducible either way, and the deployed backend's environment stays clean. Flagged for the human in `DIY.md` since "which interpreter runs the scripts" is an environment convention worth confirming, not silently establishing.
+
+### [Day 1 / Block 3] LLM provider switched Gemini -> Groq; model pinned to `openai/gpt-oss-120b` - 2026-08-25
+Decision: `localize_dataset.py` now calls Groq's OpenAI-compatible endpoint (`https://api.groq.com/openai/v1`) with `GROQ_API_KEY`. `--model` defaults to `openai/gpt-oss-120b`. Every Gemini code path is deleted, not disabled.
+Context: the Gemini free-tier daily quota (20 requests/day/model) was exhausted with 3 of 20 sample rows written. The human supplied a Groq key and specified `llama-3.3-70b-versatile`.
+Alternatives: `llama-3.3-70b-versatile` as specified - preflight proved it returns HTTP 404 `model_not_found` on this key, and `models.list()` shows no Llama chat model on the account at all (only Meta Prompt-Guard classifiers); `qwen/qwen3.6-27b` and `openai/gpt-oss-20b` (smaller, weaker at holding a strict multi-report JSON contract); waiting for the Gemini quota to roll over (blocks Block 3 for a day).
+Rationale: `openai/gpt-oss-120b` is the largest general-purpose chat model the account can actually reach, and a live call verified it holds the batch contract and produces per-report noise tiers correctly. The human chose it over the alternatives after the 404 was reported.
+
+### [Day 1 / Block 3] Narratives are batched 5 per request, with an index-alignment guard - 2026-08-25
+Decision: `localize_row` became `localize_batch`; `BATCH_SIZE = 5`. Each report carries its own site, noise tier and mechanics in the prompt, and each returned result must self-report the `index` it rewrites. A response of the wrong length, or one whose result at position *i* does not claim `index == i+1`, raises and the whole batch is retried. Parsing and validation sit *inside* the retry loop.
+Context: the human asked for conservative batching of 5, one result per input, in order, with failed batches retried whole.
+Alternatives: trusting positional order alone (a model that silently drops report 2 would shift every later narrative onto the wrong OSHA row's `sif_potential` - dataset corruption no downstream check would catch); accepting a short batch and backfilling the missing rows (same misalignment risk, plus partial writes).
+Rationale: a misaligned batch is worse than a failed one. This guard fired for real: two batches in the first run returned 2 and 3 results for 5 inputs, and were rejected rather than written.
+
+### [Day 1 / Block 3] Retry honours the server's stated wait instead of exponential backoff - 2026-08-25
+Decision: `retry_delay` parses `"try again in <N>s"` out of the Groq 429 body and sleeps `N + 1`, falling back to `2 ** attempt + jitter` only when no hint is present. `--workers` defaults to `1`.
+Context: Groq's free tier caps this model at 8,000 tokens per minute. One 5-narrative batch costs ~4,000 tokens.
+Alternatives: keeping `2 ** attempt` (1/2/4/8s - every attempt lands inside the same exhausted 60s window and is spent without ever waiting long enough; this is exactly how the first Groq run lost 15 of 20 rows); `workers=2` (fires 8,000 tokens instantly and manufactures the 429 it then has to wait out).
+Rationale: the rate limiter clears on wall-clock time and the server states the number - guessing a shorter one cannot succeed. Serial batches at ~4,000 tokens each fit the window without contending.
+
+### [Day 1 / Block 3] The 3 Gemini rows were regenerated by Groq, including their `iogp_rules` - 2026-08-25
+Decision: `data/sample/localized.jsonl` was backed up and cleared so all 20 rows come from one model. The 3 rows keep their deterministic fields byte-identical (asserted against the backup: `site_name`, `region`, `noise_tier`, `sif_potential`, `sif_rule_hits`, `osha_*`); their `raw_text`, precursor spans and `iogp_rules` are Groq's.
+Context: the human asked for both "deterministic IOGP labels unchanged" and "all 20 rows generated by the same model so the sample is internally consistent". `iogp_rules` is **not** deterministic - it is LLM-assigned (`LABELING_RULE.md` s10 leaves IOGP assignment explicitly out of scope, and no written rule derives it), so the two instructions conflicted on those 3 rows.
+Alternatives: carrying the Gemini `iogp_rules` over onto Groq-generated prose (mixes two models' judgment on the one field the human wanted consistent, and pins IOGP tags to a narrative they were not read from); writing a deterministic IOGP mapper (a new labeling rule nobody has specified - out of scope for this block).
+Rationale: the conflict was surfaced to the human rather than silently resolved, and they chose consistency. Only `sif_potential` was ever deterministic, and it is unchanged and re-verified against the raw CSV.
+
+### [Day 1 / Block 3] Localization prompt tightened over four versions; v4 vs v5 tradeoff left to the human - 2026-08-25
+Decision: the prompt was rewritten four times against the v1 review findings, and each version regenerated all 20 rows so the sample is never a mix of prompt versions. v5 is what sits in `data/sample/localized.jsonl`. v2-v4 are kept as backups outside the repo (`%TEMP%/localized_groq_v{1,2,3,4}_backup.jsonl`) because v4 beats v5 on two measured axes and the choice between them is the human's.
+Context: the v1 review found surviving US context (5 of 20 rows), Hinglish parroted verbatim from the prompt's own examples, and ~7 of 20 barrier spans naming the outcome instead of a failed control.
+Alternatives: accepting v1 with a note (the localization failure rate was ~20% and the Hinglish was fake); one big prompt rewrite (each fix was verified in isolation instead, which is what exposed the over-correction in v2).
+Rationale: measured per version rather than argued. v1 barrier 19/20 but 5 US artifacts and 1/8 noisy rows code-switching; v2 fixed US context and Hinglish but collapsed barrier spans to 1/20; v3 recovered to 14/20; v4 reached 0 US artifacts, 14/20 barriers, 72/80 spans, 10/20 IOGP; v5 fixed v4's one fabricated barrier and its stock-phrase Hinglish but dropped barrier spans to 5/20 and IOGP to 6/20. The two remaining defects trade against each other, so the human picks.
+
+### [Day 1 / Block 3] Typographic punctuation is folded to ASCII in Python, not asked for in the prompt - 2026-08-25
+Decision: `to_ascii_punctuation` maps the U+2010-U+2015 dashes, curly quotes, prime marks, ellipsis and exotic spaces onto ASCII. It runs on `localized_text` and on every precursor quote before `find_span`, so stored offsets always come from the normalized text. Asserted in `--verify-rule` (now 25 checks).
+Context: v3 still returned U+2011 and U+2013 in 2 of 20 rows despite the prompt explicitly asking for plain ASCII punctuation.
+Alternatives: repeating the instruction more forcefully (character-level compliance is not something an LLM is reliable at, and two rows had already slipped through); normalizing at training time in `backend/` (the spans are computed here, so a later fold would invalidate every stored offset).
+Rationale: this is exactly the "Python validation/extraction" stage of the documented architecture. A deterministic two-line table beats a prompt instruction that measurably does not hold, and doing it before span computation keeps `raw_text[start:end]` honest.
+
+### [Day 1 / Block 3] `max_completion_tokens` pinned because gpt-oss-120b is a reasoning model - 2026-08-25
+Decision: `localize_batch` passes `max_completion_tokens=4000`. `reasoning_effort` is left at its default.
+Context: a batch failed twice with HTTP 400 `json_validate_failed` / "max completion tokens reached before generating a valid document", and other attempts returned 2 or 3 results for 5 inputs. A measured trivial call spent 91 of its 144 completion tokens on hidden reasoning, so the longer prompt plus 5 reports overran the endpoint default and truncated the JSON mid-document.
+Alternatives: `reasoning_effort="low"` (measured to cut completion tokens from 144 to 85, but the reasoning is what strips US context and distinguishes a barrier from an outcome - the two things this regeneration existed to fix); smaller batches (the human specified 5, and the truncation is a token ceiling, not a batch-size limit).
+Rationale: raise the ceiling, keep the reasoning. The truncation was a budget problem, not a capability problem.
+
+### [Day 1 / Block 3] Localization split into two LLM stages - 2026-08-25
+Decision: `localize_batch` now makes two requests per batch. Stage 1 (`PROMPT_REWRITE`) rewrites prose only and is never shown the words "IOGP" or "precursor". Stage 2 (`PROMPT_EXTRACT`) receives only the finished Indian narrative plus the coded hazard/injury titles - never the OSHA original - and returns `iogp_rules` and the four precursor quotes. Python normalizes punctuation between the stages and computes every offset after, so `raw_text[start:end]` round-trips. The shared request/retry/index-alignment code is factored into `call_llm_batch`, which now has two callers.
+Context: over four versions of the combined single-call prompt, barrier-span coverage swung 19/20 -> 1/20 -> 14/20 -> 14/20 -> 5/20 and IOGP coverage decayed 16/20 -> 6/20 on rewrite-instruction wording alone. The judgment fields were hostage to prose rules.
+Alternatives: a fifth combined-prompt revision (four attempts had already shown the instability is structural, not a wording problem); extracting spans in Python with rules (a barrier failure is a semantic judgment, not a pattern - and `LABELING_RULE.md` s10 deliberately leaves IOGP out of scope).
+Rationale: a stage that only extracts cannot be crowded out by rewrite rules. Measured: IOGP recovered from 6/20 to 13/20 tagged, both heavy rows became genuinely messy for the first time, and Stage 2 stopped quoting outcome words entirely. Stage 2 not seeing the US original also removes the route by which US wording re-entered a span it must quote verbatim.
+
+### [Day 1 / Block 3] Stage 2 is shown the coded titles but not the OSHA narrative - 2026-08-25
+Decision: `EXTRACT_ITEM` carries `EventTitle`, `NatureTitle` and the rewritten text. It does not carry `Final Narrative`.
+Context: Stage 2 must quote spans character-for-character out of the stored `raw_text`, and must map IOGP from the incident mechanism.
+Alternatives: also passing the OSHA narrative (it would let US wording leak back into a quoted span, and gives the model two conflicting texts to quote from); passing neither title (the coded hazard/injury pair is what distinguishes an ordinary fall from a fall-from-height, which is exactly the IOGP judgment).
+Rationale: the titles are coded metadata, not prose, so they inform the mapping without supplying quotable text.
+
+### [Day 1 / Block 3] Barrier spans sourced by entailment only, never fabricated - 2026-08-25
+Decision: `precursor_barrier_failure` may be returned only where the narrative's own stated mechanics entail that a specific control was absent or defeated - a motor starting while someone works inside the machine entails isolation was not applied. Everywhere else it is null. Expected coverage ~8-10 of 20, against an original target of 17/20, and the prompt is explicitly not to be tuned to raise it.
+Context: the 20-row two-stage audit returned 1/20 barrier spans. A word-boundary scan of all 20 source narratives found ZERO naming a failed control: OSHA severe-injury reports record what happened, not which control was missing. An earlier "5/20 sources name a control" figure was a substring bug in the diagnostic - `ppe` matching inside `slipped` and `tripped`. Every earlier prompt version that scored 14-19/20 reached it by inventing a control and then quoting its own invention.
+Alternatives: accept sparse nulls and train the NER head on 3 span types (drops a PRD span type and weakens the Magic View); source barriers from a corpus that records them (a new download and mapping, impossible inside the remaining session); accept fabrication (highest coverage, and it teaches a safety model to hallucinate causes - the worst outcome available here).
+Rationale: entailment is inference from stated fact rather than invention, so every span is defensible against the narrative it came from. The honest ceiling of this corpus is ~8-10, and the limitation is logged in `AUDIT.md` with its cause rather than hidden behind a better-looking number. A judge asking "how do you know a barrier failed?" gets a quotable clause instead of a shrug.
+
+### [Day 1 / Block 3] Unit and object-class conversion stopped in the rewrite prompt - 2026-08-25
+Decision: stage 1 reproduces every source quantity verbatim with its original unit, and may not change an object into a different class of object.
+Context: the audit caught 800 lb -> 200 kg, 200 lb -> 200 kg (200 lb is ~91 kg), a 1000 lb dolly capacity -> 1000 kg, and a drum rewritten as a gas cylinder. A correct 2 inch -> 5 cm elsewhere shows this is unreliability, not incapacity.
+Alternatives: instructing it to convert more carefully (four prompt versions established that character- and arithmetic-level compliance is not something this model holds reliably); converting in Python afterwards (needs a unit parser over free prose, far more machinery than leaving the number alone).
+Rationale: quantities and object classes carry the incident mechanics, and `sif_potential` is derived from the mechanics, so a wrong conversion is a corrupted training row rather than a cosmetic blemish. A gas cylinder is a pressure vessel - a different hazard class from a drum. Not converting is both cheaper and strictly more faithful; mixed units in an Indian report are realistic anyway.
+
+### [Day 1] Day 1 delivers a localhost prototype; training, weight swap, and deploy are Day 2 - 2026-08-25
+Decision: Day 1 ships the application with keyword inference behind the three frozen signatures, verified on localhost. Training and the weight swap become Lane A's Day 2 priorities 1 and 2; the deploy becomes the integrator's Day 2 morning. The interim token is `INTERIM_LANE_A` from birth so it names its owner rather than a block number. The Day 1 exit gate checks only what is verifiable on localhost tonight, and the baseline tag is `v0.1-baseline-interim`.
+Context: two hours of hands-on time remained against an original Day 1 of 11-13 hours. Generating 1,200 rows costs ~1.9M tokens at Groq's ~8,000 tokens/minute, so the dataset occupies ~4 hours of wall clock and finishes after the session ends. Everything downstream of it - both fine-tunes, the threshold tune, the latency measurement - was therefore unreachable today. Four teammates need something to fork from in the morning.
+Alternatives: keeping training and cutting the frontend instead (Lane B and Lane C are both blocked without a page of their type to copy, so it trades one blocked lane for two); shrinking the dataset enough to train today (~600 rows leaves several of the 9 IOGP rules with almost no examples, making per-rule F1 meaningless); keeping the deploy and cutting `PATTERNS.md` (that file is the one thing four parallel agents cannot work without).
+Rationale: the block boundary that makes this cheap already existed - Block 5's frozen signatures mean the swap is a contained change behind a fixed interface, which is the property they were chosen for. What keeps the deferral honest rather than a hidden shortcut is that it is grep-able (`INTERIM_LANE_A`), owned (Lane A, named in `STAGES.md` and in their brief), and stated in `PATTERNS.md` under "What is deliberately unfinished". The gate was rewritten for the same reason: a checklist asking about deployed URLs that do not exist teaches you to wave the checklist through.
+
+### [Day 1 / Block 4] PRD stage order kept; spellchecker given a protected vocabulary instead - 2026-08-25
+Decision: the PRD order (acronym expansion -> spellcheck -> Hinglish normalization) is implemented exactly as written, and the spellchecker is handed a protected vocabulary it must never touch: every acronym key and expansion, 102 oilfield/Indian domain words, and every Roman-Hindi key in the lexicon.
+Context: run naively that order cannot work. pyspellchecker does not know `nahi`, `bina` or `chahiye`, so stage 2 rewrites them into English lookalikes and stage 3 finds nothing left to normalize. The same holds for bare acronyms - an unexpanded `ppe` becomes "pope", which is why acronyms must still expand first.
+Alternatives: reordering to Hinglish -> acronyms -> spellcheck (works, but silently contradicts a locked PRD contract and is the wider change); skipping spellcheck on any line containing Hindi (loses typo correction on exactly the messiest 40% of the corpus, which is where it is worth most).
+Rationale: a protected word list is narrower than a reordering, keeps the documented contract intact, and is auditable as data rather than as control flow. Verified both directions: `drawworks`, `khalasi`, `toolpusher`, `Duliajan`, `monkeyboard` survive stage 2, while `equipmnt` is still corrected to `equipment`.
+
+### [Day 1 / Block 4] Hindi third-person pronouns normalize to they/them, not he/him - 2026-08-25
+Decision: `usne`, `usko`, `uska`, `uski`, `uske` and `usse` all map to they/them/their. A self-check asserts no lexicon entry maps to a gendered English word.
+Context: the first implementation mapped `usne` -> "he". Sample 2021032603 describes a female worker and came out as "she slipped on dry leaves ... he said" about one person - the pipeline invented a gender the report never stated.
+Alternatives: mapping to "he" as a generic (invents a fact, and the field workforce is not uniformly male); mapping to "he/she" (noisy for a tokenizer and still enumerates); dropping the pronouns entirely (loses the subject of the clause the NER reads).
+Rationale: Hindi third-person pronouns carry no gender, so they/them is the accurate translation rather than a stylistic preference. The mistake also has real downstream cost: `cleaned_text` is what the classifier reads and what a human sees in the Report Detail view, so an invented gender becomes a false statement about a real incident.
+
+### [Day 1 / Block 4] Colliding Hindi words stay untranslated, and the gate is automated - 2026-08-25
+Decision: any Roman-Hindi word whose spelling is also a common English word is NOT mapped. 58 such words are listed and excluded. A self-check asks a fresh English dictionary whether any lexicon key is an English word and fails unless that key sits in a reviewed 11-word allowlist.
+Context: four collisions shipped and were caught by reading the 10-sample output, not by the passing 43/43 test - `sir` (honorific), `pair` (of gloves), `log` (book), `mat` (rig mat). The only assertion in place checked that HINGLISH and COLLIDES_WITH_ENGLISH are disjoint, which passes happily while a collision sits in HINGLISH alone.
+Alternatives: mapping them and accepting the damage (rewrites the 60% of the corpus that is plain English - the expensive failure); context-sensitive disambiguation (a language model at inference time, which `PRD.md` forbids on the runtime path).
+Rationale: losing a few Hindi words degrades one report slightly; rewriting English text corrupts the majority of the corpus. The measured cost is recorded rather than hidden - `to`, `se`, `aur`, `par`, `ki`, `ko` and `ne` remain in the cleaned text, so the output is translationese and is logged in `AUDIT.md` as a known limitation. The automated gate matters more than the fix: it converts "I remembered to check" into "the suite fails if I forget".
+
+### [Day 1 / Block 4] 11 acronyms recorded as UNVERIFIED and deliberately not expanded - 2026-08-25
+Decision: `dsv`, `wd`, `temp`, `oim`, `mop`, `tt`, `sh`, `lt`, `ht`, `cp` and `pm` are listed with their competing readings and are NOT expanded. A self-check asserts no acronym is both applied and unverified.
+Context: `STAGES.md` Block 4 forbids guessing at an OIL acronym without marking it unverified. Each of these has more than one plausible expansion in a drilling context - `ht` is high tension or height, `pm` is preventive maintenance or afternoon, `dsv` is a drilling supervisor onshore but a diving support vessel offshore.
+Alternatives: expanding the most likely reading (a coin flip that becomes the text the classifier and NER read, so a wrong guess silently rewrites the incident); dropping them from the file (loses the record of what still needs an SME).
+Rationale: an acronym left alone costs one unexpanded token; an acronym expanded wrongly rewrites the mechanics of the incident. Keeping them listed with their ambiguity makes the gap resolvable by an operations SME later instead of invisible.
+
+### [Day 1 / Block 5] Density ranks on the Wilson lower bound, and shows the raw rate - 2026-08-25
+Decision: `/api/v1/analytics/density` returns a RATE (SIF-potential reports over total reports for the group) and orders rows by the Wilson score interval's 95% lower bound. Both numbers ship: `sif_rate` is the honest fraction the table displays, `rank_score` is what the ordering uses. No group is ever excluded for being small.
+Context: a raw count ranks sites by how much paperwork they file, so the best reporting culture tops the table - the opposite of the intended message. But a raw rate makes 1-of-1 a perfect 100% and puts it above 24-of-40 at 60%.
+Alternatives: a minimum-reports threshold ("ignore groups under 10") - hides a genuinely dangerous new site until it has filed enough paperwork, which is the wrong failure for a safety tool; Bayesian shrinkage toward the global mean (defensible, but needs a prior nobody can justify on a 20-row sample, and the number it reports is no longer the site's own rate); ordering on the raw rate and letting the UI caveat it (pushes a known-wrong ranking onto the screen the problem statement names as the expected outcome).
+Rationale: Wilson asks "what is the lowest rate consistent with this evidence", which is exactly the small-denominator question - 1-of-1 scores 0.21, 24-of-40 scores 0.45, so the forty-report site correctly wins while a small site with a genuinely bad rate still climbs as evidence accumulates. It is ~10 lines of arithmetic on two integers: no dependency, no prior, no tuning. Showing both columns means "why is 100% below 60%?" is answered by the table itself rather than by a hand-wave.
+
+### [Day 1 / Block 5] Inference reuses the labeling rule's step-0 normalization; the NER never does - 2026-08-25
+Decision: `sif_classifier.py` normalizes text (lowercase, punctuation to spaces, collapse runs) before matching, exactly as `data/LABELING_RULE.md` § 5 step 0 mandates. `precursor_ner.py` deliberately does NOT, and matches the caller's exact string.
+Context: the interim classifier missed a real SIF row because the narrative said `jack-knifed` while the keyword list said `jack knifed`. That is the same silent bug § 9.10 of the labeling rule records costing 1,775 mislabelled rows.
+Alternatives: enumerating spelling variants per keyword (unbounded, and the next variant fails silently again); normalizing in every module for consistency (would break every precursor span, since offsets must index the string the caller passed in).
+Rationale: the classifier returns no offsets, so normalizing is free there and makes the interim agree with the rule that labels its training data. The NER's entire contract is `text[start:end] == entity_text`, so the same transformation that helps the classifier would corrupt the highlighting. The asymmetry is stated in both modules' docstrings because it is the kind of "consistency" fix a later reader would otherwise apply for tidiness.
+
+### [Day 1 / Block 5] `postgrest.APIError` imported directly to separate client errors from 500s - 2026-08-25
+Decision: `routes/reports.py` and `routes/review.py` import `from postgrest.exceptions import APIError` and translate Postgres `23503` (foreign_key_violation) into a 422. `postgrest==2.31.0` ships with `supabase==2.31.0`; it is not a new install and adds nothing to `requirements.txt`.
+Context: a submission naming a `site_id` that does not exist, or a review naming an unknown `reviewed_by`, is the client's error. Left alone it surfaces as a raw 500 - which `PRD.md` § Edge cases forbids during a live demo.
+Alternatives: catching bare `Exception` and reading `getattr(error, 'code', None)` (drops the import, but also swallows genuine faults into a 422 and hides the shape of what was caught); pre-checking that the site exists before inserting (an extra round trip per submission, and still racy).
+Rationale: the explicit exception type is the narrowest catch that does the job, and it fails loudly at import if the dependency ever moves rather than silently degrading to a bare-except. Only `23503` is translated; every other `APIError` re-raises untouched, so a real fault stays a real fault.
+
+### [Day 1 / Block 7] `GET /api/v1/sites` added, plus two lines in FROZEN `backend/main.py` - 2026-08-26
+Decision: new `backend/routes/sites.py` returning `list[SiteOut]`, registered with an import line and an `include_router` line in `main.py`. **`main.py` is FROZEN, so this needs the integrator's sign-off retroactively** - logged in `DIY.md`. No change to `schemas.py`: the endpoint returns the frozen `SiteOut` already embedded in every report response, so no contract was added, only a way to read one that existed.
+Context: `PRD.md` § Frontend pages item 2 requires a site selector, and `PRD.md` § Backend API lists no way to read `sites`. Without this the Intake page has no data source for the selector at all.
+Alternatives: read `sites` from the browser's Supabase client (a second data path with no server validation in front of it, breaks the single-HTTP-layer rule, and does not work today - the anon role has no grants, `42501 permission denied`, `AUDIT.md` 2026-08-25); hard-code the eight seeded sites in the frontend (mocks a table that already exists, which the Block 7 brief forbids).
+Rationale: it is the smallest possible addition - 30 lines, one select, no new contract - and it keeps every backend read behind FastAPI where the service-role key lives.
+
+### [Day 1 / Block 7] The role claim is read from `app_metadata`, never `user_metadata` - 2026-08-26
+Decision: `lib/user_role.ts` reads `app_metadata.role`. An absent, empty, non-string or unrecognised claim resolves to null and lands on `/intake`. `admin` - a role in `schema.sql` that `PRD.md` gives no redirect for - lands on `/dashboard`.
+Context: the redirect decides which screen a role opens, so whichever field carries the claim is the privilege boundary.
+Alternatives: `user_metadata` (the field most Supabase examples use); a `role` column read from the `users` table on every page load (an extra round trip per navigation, and the table is empty today).
+Rationale: `user_metadata` is writable by the user themselves through `supabase.auth.updateUser({ data: ... })`, so a role kept there lets any site supervisor promote themselves to `hse_manager` from the browser console. `app_metadata` is writable only with the service-role key, which never leaves the backend. The unknown-role default goes to the *lesser*-privileged screen so a missing claim cannot open the management view; `lib/role_check.ts` asserts that direction explicitly, including the `user_metadata` forgery path.
+
+### [Day 1 / Block 7] Auth enforced in `middleware.ts`, not in a client-side guard - 2026-08-26
+Decision: `middleware.ts` calls `supabase.auth.getUser()` and redirects before any protected page renders. The two pure role rules live in `lib/user_role.ts`, separate from `lib/supabase_client.ts`.
+Context: `PRD.md` § Frontend pages item 1 requires protected routes; the brief requires no flash of real data.
+Alternatives: a `useEffect` redirect in each page (renders the page first, so an unauthenticated visitor to `/dashboard` sees a frame of real KPI numbers before being sent away - the exact failure the brief names); `getSession()` instead of `getUser()` (decodes the cookie and trusts it, so a hand-edited cookie claiming `hse_manager` would pass).
+Rationale: middleware runs instead of the render, not after it. `getUser()` verifies the JWT with Supabase at the cost of one round trip per protected request. The `user_role.ts` split exists because `supabase_client.ts` builds a browser client at module load and throws there on missing env vars - importing it into the Edge runtime would drag both into a runtime that has neither.
+
+### [Day 1 / Block 7] Span offsets are sliced by code point, not by UTF-16 unit - 2026-08-26
+Decision: `buildReportSegments` slices `Array.from(text)`, not the string. Spans that cannot be sliced - reversed, negative, zero-width, out of range, non-integer, or overlapping one already emitted - are dropped rather than clamped.
+Context: `span_start` / `span_end` are produced by Python, whose `len()` and slicing count code points. JavaScript's `String.prototype.slice` counts UTF-16 units.
+Alternatives: plain `string.slice` (differs the moment a non-BMP character appears - one emoji shifts every later offset by one per surrogate pair and highlights the wrong words); clamping bad offsets into range (invents a highlight over text the model never pointed at).
+Rationale: `Array.from` splits by code point, which matches Python exactly. Devanagari is inside the BMP so this costs nothing today and is correct anyway when a report carries an emoji. Dropping rather than clamping keeps the invariant that a malformed span list loses a highlight, never a character of text - asserted on 20 cases in `lib/precursor_spans_check.ts`.
+
+### [Day 1 / Block 7] Two frontend dependencies, exact pins - 2026-08-26
+Decision: `@supabase/supabase-js@2.112.4` and `@supabase/ssr@0.12.5`, both `--save-exact`. `tsconfig.json` gains `allowImportingTsExtensions` so the two self-checks run under plain `node`.
+Context: `PRD.md` § Tech stack fixes Supabase as DB/Auth. `@supabase/ssr` is what supplies the cookie-based client middleware needs; `supabase-js` alone only offers a browser client that cannot read the request's cookies.
+Alternatives: `supabase-js` alone with hand-rolled cookie handling (re-implements token refresh, the part most worth not writing); no state-management or component library was added, per the brief.
+Rationale: two packages, both first-party, both required by the auth boundary. `noEmit` is on, so `allowImportingTsExtensions` never affects a build output - it only lets `node lib/precursor_spans_check.ts` resolve a relative import.

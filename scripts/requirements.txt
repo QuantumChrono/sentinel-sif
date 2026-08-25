@@ -1,0 +1,6 @@
+# Offline dataset generation only (scripts/localize_dataset.py). Deliberately separate from
+# backend/requirements.txt: nothing under backend/ imports this script, and the deployed
+# backend must not carry pandas or an LLM client. Versions are the ones actually verified.
+pandas==2.2.3
+openai==2.20.0
+python-dotenv==1.2.1
