@@ -59,6 +59,13 @@ export function AppHeader() {
           <Link href="/dashboard" className="rounded underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900">
             Dashboard
           </Link>
+          {/* The review queue is reachable by every signed-in role. The queue is a workflow, not a
+              privileged view: a site supervisor who submitted a low-confidence report is often the
+              person who can say what actually happened. Whether it becomes role-gated is a decision
+              for whoever owns the privilege rule, not something to assume here. */}
+          <Link href="/review" className="rounded underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900">
+            Review queue
+          </Link>
         </nav>
         <div className="ml-auto flex items-center gap-3 text-sm">
           <span className="text-slate-600">

@@ -11,30 +11,47 @@ Status marks: `[ ]` not started · `[~]` in progress · `[x]` done and verified.
 ```
 DAY:        Day 1 — Baseline
 MODE:       A (sequential, solo)
-ACTIVE:     Block 7 — Frontend. Step 7A (foundation + hero flow) BUILT, NOT SIGNED OFF.
-            Shipped: `lib/api_client.ts` (single HTTP layer, 8 typed functions, FROZEN),
+ACTIVE:     Block 7 — Frontend. Steps 7A AND 7B BUILT, NOT SIGNED OFF.
+            7A shipped: `lib/api_client.ts` (single HTTP layer, 8 typed functions, FROZEN),
             `lib/supabase_client.ts` (anon key only), `lib/user_role.ts` (privilege rule),
             `lib/precursor_spans.ts` (span slicing), `middleware.ts` (auth boundary),
             `app/layout.tsx` (FROZEN) + header, login, `app/intake/`, `app/reports/[id]/`,
             `app/report_result.tsx` (one renderer, both pages). New: `backend/routes/sites.py`
-            + 2 lines in FROZEN `main.py` — NEEDS RETROACTIVE SIGN-OFF (DIY.md).
-            VERIFIED: tsc / lint / build clean; span check 20/20; role check 16/16;
-            unauthenticated redirects measured with curl (all protected routes 307 → /login).
-            NOT VERIFIED, exit criteria NOT met: no real POST /reports, GET /reports/{id} or
-            GET /sites has ever run — `backend/.env` still lacks the service-role key, so the
-            backend cannot reach the database (unchanged blocker, DIY.md). Both-roles redirect
-            is unproven end to end: no account has `app_metadata.role` set, so every real
-            session lands on /intake. `hse_manager` → /dashboard is a 404 until 7B.
-            See AUDIT.md 2026-08-26 (7 entries).
-REMAINING:  Step 7B — Dashboard (KPI cards, IOGP chart, Site/Activity Density Ranking table —
-            the priority screen) and Review Queue. Both deliberately out of 7A's scope.
+            + 2 lines in FROZEN `main.py` — STILL NEEDS RETROACTIVE SIGN-OFF (DIY.md).
+            7B shipped: `app/dashboard/` (page + density_table + kpi_cards +
+            rule_distribution_chart + high_risk_feed) and `app/review/` (page + queue_row).
+            One new dependency: `recharts@3.10.1`, exact pin. One line added to
+            `app/app_header.tsx`: a /review nav link (not FROZEN; role-gating is a DIY call).
+            THE BLOCKER IS GONE: `backend/.env` now holds the service-role key, the database
+            is reachable, and every 7B check below ran against it — not a stub.
+            VERIFIED IN 7B: tsc 0 / lint 0 / build 0, all 7 routes compile. Density ranking
+            matched an INDEPENDENT hand computation on 7 sites, 0 mismatches, and the
+            small-denominator property held (12-of-20 at 60% correctly outranks 1-of-1 at
+            100%). Full review loop proven on BOTH paths with the DB row read before and
+            after: an ambiguous 20-char report scored 0.5, did NOT auto-publish, appeared in
+            the queue, and Confirm/Override wrote `confirmed`/`overridden` + `reviewed_by`,
+            flipped `reports.status` to `processed`, left `confidence` untouched, and left the
+            queue. Empty-database render verified for all 5 components. All 42+2 test rows
+            deleted; DB back to reports=2.
+            NOT VERIFIED, exit criteria NOT met: both-roles redirect is still unproven end to
+            end — no auth account has `app_metadata.role` set, so every real session reads
+            "no role set" and lands on /intake (DIY.md, unchanged). Nothing has been clicked
+            in a real browser with a real session; the UI write path was exercised through the
+            exact payloads the pages send, not through the DOM.
+            See AUDIT.md 2026-08-26 (7 entries from 7A, 11 from 7B).
+REMAINING:  Block 7 exit needs the two demo accounts with `app_metadata.role` set, then a
+            real signed-in pass over both roles. Then Block 8 (real model weights) and
+            Block 9 (close-out, PATTERNS.md, deploy).
 BLOCKED:    Block 3 — the 1,200-row generation run has NOT been started. Groq free tier is
             ~200,000 tokens/day/model against ~1.9M needed, so this is multi-day or needs a
             paid tier. `scripts/split_dataset.py` handles a partial checkpoint, so Lane A can
             be fed from however many rows exist. See AUDIT.md 2026-08-25.
             Block 6 training stays blocked behind the dataset.
-NEXT:       Fix `backend/.env` (DIY.md) — it gates verification of 7A AND every DB path in
-            Block 5. Then Step 7B.
+NEXT:       Create the two demo accounts with `app_metadata.role` set (DIY.md) — the last
+            thing gating Block 7's exit criteria. Everything else in Block 7 is verified.
+PORTS:      Port 8000 is occupied by an UNRELATED service (returns a `version` field; ours
+            does not). This backend runs on 8001: `uvicorn main:app --port 8001`.
+            `frontend/.env.local` already points at 8001. Start nothing on 8000.
 INTEGRATOR: Swayam (sole owner of merges and FROZEN files)
 ```
 
