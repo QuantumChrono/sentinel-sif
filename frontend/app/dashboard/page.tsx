@@ -25,7 +25,6 @@
  */
 
 import { useEffect, useState } from "react";
-
 import {
   getDensity, getReviewQueue, getRuleDistribution, listReports,
   type ApiError, type DensityResponse, type ReportSummary, type ReviewQueueRow, type RuleCount,

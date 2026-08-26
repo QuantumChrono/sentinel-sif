@@ -101,6 +101,7 @@ export interface ProcessingFailure {
 export interface DensityRow {
   group_type: "site" | "activity";
   group_name: string;
+  group_id: string | null;
   region: string | null;
   total_reports: number;
   sif_reports: number;
@@ -256,6 +257,7 @@ export function createReport(payload: ReportCreate): Promise<ApiResult<ReportDet
 
 export interface ReportFilters {
   site_id?: string;
+  activity?: string;
   sif_potential?: boolean;
   iogp_rule?: string;
   review_status?: ReviewStatus;
@@ -265,13 +267,13 @@ export interface ReportFilters {
 }
 
 /** `GET /api/v1/reports` - list and filter, newest first. Carries no precursor spans. */
-export function listReports(filters: ReportFilters = {}): Promise<ApiResult<ReportSummary[]>> {
+export function listReports(filters: ReportFilters = {}): Promise<ApiResult<ReportDetail[]>> {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(filters)) {
     if (value !== undefined) query.set(key, String(value));
   }
   const suffix = query.toString();
-  return request<ReportSummary[]>(`/api/v1/reports${suffix ? `?${suffix}` : ""}`);
+  return request<ReportDetail[]>(`/api/v1/reports${suffix ? `?${suffix}` : ""}`);
 }
 
 /** `GET /api/v1/reports/{id}` - what the Magic View renders. Spans index `cleaned_text`. */

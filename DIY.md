@@ -63,3 +63,6 @@ Cross-lane requests (Days 2–4) also land here: when a lane needs a change insi
 ## Done
 
 *(move confirmed items here with a date — don't delete)*
+
+- [ ] **(Day 2, Lane B)** Add `activity` filter parameter to `GET /api/v1/reports` endpoint in `backend/routes/reports.py` to support drill-down from the "By Activity" density ranking table. Currently `site_id`, `sif_potential`, `iogp_rule`, `review_status` are supported; `activity` would need to match reports by activity precursor spans. This is a read-only query extension, not a data model change.
+- [ ] **(Day 2, Lane B)** Add site UUID to DensityRow in FROZEN `backend/schemas.py`. Currently `DensityRow` contains only `group_name` (string), making it impossible for the frontend to drill down into a specific site's reports without a second lookup query. Need to add `group_id: UUID | None` field to `DensityRow` in schemas.py (Line 218). This is a FROZEN file requiring integrator sign-off and `DECISIONS.md` entry. Also requires updating `/api/v1/analytics/density` to return the UUID for each site.
