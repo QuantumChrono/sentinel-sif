@@ -63,3 +63,5 @@ Cross-lane requests (Days 2–4) also land here: when a lane needs a change insi
 ## Done
 
 *(move confirmed items here with a date — don't delete)*
+- [ ] **(Day 2)** Integrator: `STAGES.md` "Current Position" is stale — BASELINE still says `data/processed/` holds 0 rows and the demo seed is 20; it now holds **326** (`localized.jsonl`), split 277 train / 49 test. Lane A did not edit the block, since four lanes share it and the integrator owns merges.
+- [ ] **(Day 2)** Decide on `2025099811`: its localized text states "No permit was checked for this packing job" but its OSHA source never mentions a permit (`AUDIT.md` 2026-08-26). Drop the row, regenerate it, or accept it — Lane A did not edit reviewed data.

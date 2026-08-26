@@ -284,12 +284,21 @@ sentence, and never quote from another report:
   - equipment: the equipment, tool, vehicle or material involved
   - barrier_failure: the safety control that was missing, bypassed, defeated or inadequate
 
-THE BARRIER FAILURE IS THE HARDEST FIELD. RETURN IT ONLY ON ENTAILMENT.
-Return a span here ONLY where the mechanics this report itself states ENTAIL that a specific
+THE BARRIER FAILURE IS THE HARDEST FIELD. A SPAN IS EARNED ONE OF EXACTLY TWO WAYS.
+WAY 1 - THE REPORT SAYS IT. The report's own words state that a control was missing, absent,
+bypassed, defeated, removed or not applied. Quote that clause. This is reading, not inferring,
+so it needs no further justification: "no guard", "the machine was unguarded", "bina harness",
+"without a permit", "no pad under the jacking point", "lockout miss hua", "was not secured",
+"the interlock had been removed" are all correct answers when the report actually contains
+them. Look for absence stated in Hindi as readily as in English - "bina", "nahi", "nahi kiya"
+attached to a control is the same statement.
+WAY 2 - THE MECHANICS ENTAIL IT. The mechanics this report states ENTAIL that a specific
 control was absent or defeated - where, given what the report says happened, that control
 cannot have been in place. The canonical case: a motor, pump or machine that starts, moves or
 energises while someone is working inside it or on it entails that energy isolation was not
-applied, and the clause reporting that start-up is the span. Otherwise return null.
+applied, and the clause reporting that start-up is the span.
+If neither way applies, return null. Way 1 does not loosen anything below: a control you had to
+supply yourself is still a fabrication, and the words must be in the report you were given.
   Never infer a barrier from the OUTCOME. That someone was injured, how badly, and what kind
   of accident it was are not entailment: a fall does not by itself mean fall protection was
   missing, a machine injury does not by itself mean isolation was skipped, a burn does not by
@@ -820,8 +829,10 @@ def main():
                                        "rotating through all of them. For reproducing a "
                                        "single model's output; a pinned run stops at that "
                                        "model's daily quota")
-    parser.add_argument("--target-id", help="generate this OSHA ID only, bypassing the "
-                                            "seeded sample draw. For re-testing one row")
+    parser.add_argument("--target-id", help="generate these OSHA IDs only (one, or several "
+                                            "comma-separated), bypassing the seeded sample "
+                                            "draw. For re-testing one row, and for a targeted "
+                                            "top-up of a rule the seeded draw under-supplied")
     parser.add_argument("--workers", type=int, default=1,
                         help="concurrent batches. Default 1: the free tier allows 8,000 "
                              "tokens/min and one batch costs ~4,000, so parallel batches "
@@ -852,9 +863,11 @@ def main():
           f"({positives / len(frame):.1%}) | false {len(frame) - positives:,}")
 
     if args.target_id:
-        sample = frame[frame["ID"] == args.target_id]
-        if sample.empty:
-            raise SystemExit(f"{args.target_id} is not in the labeled frame")
+        wanted = [i.strip() for i in args.target_id.split(",") if i.strip()]
+        sample = frame[frame["ID"].isin(wanted)]
+        missing = set(wanted) - set(sample["ID"])
+        if missing:
+            raise SystemExit(f"not in the labeled frame: {', '.join(sorted(missing))}")
         count = len(sample)
     else:
         sample = pick_sample(frame, count, args.seed)
