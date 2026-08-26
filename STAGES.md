@@ -9,75 +9,53 @@ Status marks: `[ ]` not started · `[~]` in progress · `[x]` done and verified.
 ## Current Position
 
 ```
-DAY:        Day 1 - Baseline
-MODE:       A (sequential, solo)
-ACTIVE:     Block 9 - Baseline close-out. THREE of four items now done: 9.1 `PATTERNS.md`, the
-            demo seed (item 1, PARTIAL - 20 rows not ~50), and the edge-case table (item 2, MET).
-            Only DEPLOY (item 4) remains in this block.
-            9.2 SHIPPED: three re-runnable check scripts, all run against the live API on 8001 -
-            `scripts/check_edge_cases.py` 16/16, `scripts/check_prompt_injection.py` 17/17,
-            `scripts/check_empty_database.py` 6/6 (it snapshots, empties and restores all six
-            tables, verifying the restore by id SET, not by row count). Plus
-            `scripts/seed_demo_reports.py`, which pushes dataset rows through the real
-            `POST /api/v1/reports` rather than writing tables directly.
-            TWO REAL BUGS FOUND AND FIXED, both raw `HTTP 500`s that `PRD.md` forbids: U+0000 in
-            report text (Postgres `22P05`, uncaught because `_insert_report` catches only
-            `23503`) and a lone surrogate (crashed FastAPI's OWN 422 handler on
-            `.encode("utf-8")` - validation worked, reporting it did not). Fixed in
-            `backend/schemas.py` and `backend/main.py` respectively. BOTH FILES ARE FROZEN, so
-            both need retroactive integrator sign-off - `DIY.md`, two items at the top.
-            Both are pinned as regression cases; an emoji (valid surrogate pair) is asserted to
-            still round-trip, so the fix did not over-scrub.
-            DATABASE NOW: reports 26, classifications 26, iogp_tags 20, precursors 71, sites 8,
-            users 3. That is 20 seeded + 6 earlier test rows; every check script deletes its own
-            rows and all 26 classifications carry `model_version = 'interim-keyword-0.1'`.
-            LATENCY, corrected: the seed run's median 2939 ms was NOT pipeline cost. Inference is
-            5.6 ms total; one Supabase round trip is 85 ms; the same ingest in-process is 376 ms.
-            `localhost` resolves to `::1` first while uvicorn binds IPv4-only, so each new
-            connection paid a failed IPv6 attempt - with a reused connection both hosts are
-            ~384 ms, inside the 3s target. See PORTS below and `AUDIT.md` 2026-08-26.
-            NOT VERIFIED, and logged open rather than smoothed over: NO PAGE WAS RENDERED IN A
-            BROWSER this block. There is no Playwright in the repo and the pages are
-            client-rendered, so the empty-database case is proven at the API layer and the
-            injection case structurally (no `dangerouslySetInnerHTML`/`innerHTML`/`eval` in any
-            of 23 frontend files) - neither was seen on a screen.
-REMAINING:  Block 7 exit - one real signed-in browser pass over both roles, which is also what
-            closes the "no page rendered" finding above. Note `DIY.md` now marks the demo-account
-            and `users`-row items DONE, so this block's earlier "no auth account has
-            app_metadata.role set" text was stale; the browser pass itself is what is left, and
-            it was not re-verified here. Block 8 (real weights; `grep` must then find no
-            INTERIM_LANE_A, and Lane A re-runs the demo seed). Block 9 item 4 - deploy.
+DAY:        Day 2 - Tier 1 depth
+MODE:       B (parallel lanes)
+ACTIVE:     All four lanes - A (model quality), B (analytics & dashboard), C (review & intake),
+            D (Tier 2 & hardening). Day 2 task list is below under "Day 2 - Tier 1 depth"; lane
+            ownership and the FROZEN list are further down THIS file and are read-only for lanes.
+INTEGRATOR: Swayam (sole owner of merges and FROZEN files)
+
+DEPLOYED:   Live and smoke-tested end to end on 2026-08-26, zero CORS errors (`AUDIT.md`).
+            frontend -> Vercel, Root Directory `frontend`.
+            backend  -> Render Web Service, native Python 3 runtime, Root Directory `backend`,
+                        `uvicorn main:app --host 0.0.0.0 --port $PORT`, deploys on push to `main`.
+            database -> Supabase managed Postgres.
+            The root `Dockerfile` is on NO deploy path - it was written for Hugging Face Spaces,
+            which was dropped because its Docker environments are paid (`DECISIONS.md`
+            2026-08-26). Deletion is flagged in `DIY.md`.
+            Render free tier spins down when idle: wake it before the demo, not at it. Its
+            512 MB memory ceiling is the constraint to check before Block 8 adds `torch`.
+            `GEMINI_API_KEY` is scrubbed from `backend/.env` and set on neither platform - the
+            runtime backend and the offline generation scripts now share no credential.
+
+BASELINE:   Day 1 closed. Blocks 1,2,4,5,7,9 done. `PATTERNS.md` is the reference implementation
+            every lane copies - read it in full before writing code.
+            Demo seed is 20 rows, not ~50 (`data/processed/` holds 0). Database: reports 26,
+            classifications 26, iogp_tags 20, precursors 71, sites 8, users 3. All 26
+            classifications carry `model_version = 'interim-keyword-0.1'` and are STALE the
+            moment real weights land - Lane A re-runs `scripts/seed_demo_reports.py`.
+            Three re-runnable check scripts pass against the API: edge cases 16/16, prompt
+            injection 17/17, empty database 6/6.
+
 BLOCKED:    Block 3 - the 1,200-row generation run has NOT been started. Groq free tier is
             ~200,000 tokens/day/model against ~1.9M needed, so this is multi-day or needs a paid
-            tier. This is also why the demo seed is 20 rows and not ~50: `data/processed/` holds
-            0 rows and the reviewed corpus is the 20 in `data/sample/`.
-            Block 6 training stays blocked behind the dataset.
-DEPLOY:     Block 9 item 4 - CONFIGURATION WRITTEN, NOTHING PUSHED. Three new root files, no
-            existing file changed and no FROZEN file touched: `Dockerfile` (python:3.11-slim,
-            `COPY backend/ ./`, uvicorn on 7860, non-root uid 1000), `.dockerignore` (every
-            pattern `**`-prefixed - `.dockerignore` is not `.gitignore`, a bare `.env` would NOT
-            have excluded `backend/.env` and its service-role key), and `README.md` whose YAML
-            frontmatter IS the HF Spaces config (`sdk: docker`, `app_port: 7860` = the CMD port).
-            `frontend/` -> Vercel with Root Directory `frontend`; backend -> HF Space, which is
-            its own git repo reached by a SECOND remote, so GitHub's main protection is untouched.
-            VERIFIED: `npm run build` passes, 7/7 pages, no type or lint error.
-            NOT VERIFIED: `docker build` never ran - no Docker daemon on this machine. The
-            Dockerfile is reviewed but unbuilt; the Space's build log is the first real test.
-            NO WEIGHTS NEEDED: inference is still INTERIM_LANE_A keyword code, so the image needs
-            no ML library at all. The deploy does not wait on Block 8.
-            CORS is an explicit one-origin allowlist, never a wildcard (the API has no auth and
-            holds the service-role key). Consequence, accepted and logged: Vercel PREVIEW
-            deployments will fail CORS - demo from the production URL.
-NEXT:       The 8 deploy steps in `DIY.md` are the human's to run; the agent flags ready and does
-            not push. The both-roles browser pass can run in parallel.
-PORTS:      Port 8000 is occupied by an UNRELATED service (returns a `version` field; ours does
-            not). This backend runs on 8001: `uvicorn main:app --port 8001`. Start nothing on
-            8000. USE `http://127.0.0.1:8001`, NOT `localhost:8001`, for any local timing: the
+            tier. Block 6 training and Block 8 (real weights, then `grep` must find no
+            INTERIM_LANE_A) stay blocked behind the dataset. Lane A gets whatever
+            `split_dataset.py` produces from the rows that exist.
+
+OPEN:       NO PAGE HAS BEEN RENDERED IN A BROWSER BY AN AGENT. There is no Playwright in the
+            repo and the pages are client-rendered, so the empty-database case is proven at the
+            API layer and the injection case structurally - neither was seen on a screen. The
+            signed-in pass over both roles (Block 7 exit) is still the human's, on the live URLs.
+            Deployed ingest latency not re-measured. Two FROZEN-file sign-offs from Block 9
+            (`schemas.py` NUL strip, `main.py` 422 handler) still unconfirmed in `DIY.md`.
+
+PORTS:      Local only. Port 8000 is occupied by an UNRELATED service; this backend runs on 8001.
+            USE `http://127.0.0.1:8001`, NOT `localhost:8001`, for any local timing: the
             IPv4-only bind makes `localhost` pay a failed IPv6 attempt per connection
-            (`GET /health` 2649 ms vs 615 ms). `frontend/.env.local` points at `localhost:8001`,
-            which is correct for the browser (it keeps connections alive) but wrong for
-            benchmarking.
-INTEGRATOR: Swayam (sole owner of merges and FROZEN files)
+            (`GET /health` 2649 ms vs 615 ms). Real pipeline cost is ~384 ms, inference 5.6 ms of
+            it. Irrelevant on Render, where the bind is `0.0.0.0`.
 ```
 
 Update this block on every day change, lane change, and block completion. It is the first thing any agent reads after a context clear.
@@ -233,7 +211,18 @@ Work blocks top to bottom. Do not start a later block's deliverable early. Two b
   `data/processed/`, 20 in `data/sample/`, no `data/test/`, 6 `INTERIM_LANE_A` markers,
   1-of-20 barrier spans, nothing deployed - each with an owner and a day. See DECISIONS.md
   2026-08-26 for why the violations are named instead of omitted.
-- [ ] Deploy: frontend → Vercel, backend → Render/Railway/HF Spaces. Full flow tested on deployed URLs, not just localhost.
+- [x] Deploy: frontend → Vercel, backend → Render. Full flow tested on deployed URLs, not just localhost.
+- **[x] MET 2026-08-26, by the integrator on the live stack:** frontend on Vercel (Root Directory
+  `frontend`), backend on Render as a native Python 3 Web Service (Root Directory `backend`,
+  `uvicorn main:app --host 0.0.0.0 --port $PORT`), database on Supabase. End-to-end smoke test
+  passed with **zero CORS errors**, which is the specific proof that `FRONTEND_ORIGINS` matches
+  the Vercel origin on scheme + host and that `NEXT_PUBLIC_API_BASE_URL` carries no trailing
+  slash. Hugging Face Spaces was dropped - its Docker environments are paid - so the root
+  `Dockerfile` is on no deploy path and the unbuilt-container risk is retired rather than fixed
+  (`DECISIONS.md`, `AUDIT.md` 2026-08-26).
+  STILL OPEN, so the exit line below is not fully closed: no agent has rendered a page in a
+  browser, deployed ingest latency is not re-measured, and the signed-in pass over both roles is
+  the human's on the live URLs (`DIY.md`).
 - Do NOT: deploy without explicit human sign-off, skip `PATTERNS.md` because the code "reads clearly" — five parallel agents will each invent their own conventions without it
 - Exit: a complete unassisted run works on deployed URLs; `PATTERNS.md` committed
 
