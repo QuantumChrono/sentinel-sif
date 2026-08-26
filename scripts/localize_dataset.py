@@ -133,7 +133,15 @@ NOISE_INSTRUCTIONS = {
     ),
 }
 
-BATCH_SIZE = 5  # narratives per request, in both stages. Index-matched by Python.
+BATCH_SIZE = 1  # narratives per request, in both stages. Index-matched by Python.
+# 1, not 5: Groq's free tier caps 8,000 tokens/min, and a 5-row request overran that in a
+# single call, so every batch spent its whole retry budget inside an already-closed window.
+# A 1-row request is NOT small - measured from Groq's own 429 bodies on 2026-08-26 it is
+# 3,251-5,467 tokens, because the prompt template (rules, noise tier, schema) dwarfs the
+# narrative. Two stages per row is therefore ~7,000-11,000 tokens: still over 8,000/min for
+# one model, which is why finishing a run depends on fleet rotation, not on batch size alone.
+# The batch machinery (index-matched results, whole-batch retry) is left intact: it costs
+# nothing at n=1 and raising this back is a one-line change if a paid tier lifts the cap.
 
 # The model fleet, tried in order and rotated when one is exhausted. Every free tier here caps
 # tokens-per-minute *and* tokens-per-day, so no single model can finish a 1,200-row run
@@ -593,7 +601,7 @@ def call_llm_batch(fleet, prompt, count, required_field=None):
                 model=model, temperature=1.0,
                 response_format={"type": "json_object"},
                 # gpt-oss-120b is a reasoning model: a measured trivial call spent 91 of its
-                # 144 completion tokens on hidden reasoning. Five reports plus that overhead
+                # 144 completion tokens on hidden reasoning. A batch plus that overhead
                 # overran the endpoint's default ceiling and truncated the JSON mid-document,
                 # which arrives as a 400 json_validate_failed or a short results array. The
                 # ceiling is raised rather than reasoning_effort lowered, because the
@@ -613,6 +621,14 @@ def call_llm_batch(fleet, prompt, count, required_field=None):
                 if required_field and not str(result.get(required_field) or "").strip():
                     raise ValueError(f"result {offset + 1} has no {required_field}")
             usage = response.usage
+            if model in GROQ_MODELS:
+                # Pace, don't burst: back-to-back calls stack inside one 8,000/min window and
+                # 429 within a couple of rows. 4s takes the edge off that burst, but it does NOT
+                # keep a single model under the cap - at a measured ~5,000 tokens per call, one
+                # model sustains only ~1.6 calls/min, so staying under by pacing alone would
+                # need ~37s here. Fleet rotation, not this sleep, is what lets a run progress;
+                # this only reduces how often rotation is triggered. Raise it if 429s dominate.
+                time.sleep(4)
             return results, usage.prompt_tokens, usage.completion_tokens
         except Exception as error:  # exhausted model / transient 5xx / bad batch - retry
             # A per-day quota is not transient: no backoff inside this run can clear it, and
