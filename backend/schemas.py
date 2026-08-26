@@ -20,6 +20,7 @@ canonical 9 are enforced where they are produced (`inference/iogp_tagger.py`) an
 as data so `/analytics/rules` can return all 9 even against an empty database.
 """
 
+import re
 from datetime import datetime
 from typing import Literal
 from uuid import UUID
@@ -41,6 +42,18 @@ CONFIDENCE_THRESHOLD = 0.65
 
 MAX_REPORT_CHARS = 20_000
 
+# U+0000, which a Postgres `text` column cannot store: it fails the insert as `22P05`
+# ("unsupported Unicode escape sequence, U+0000 cannot be converted to text"), and nothing
+# in `routes/reports.py` catches that, so it surfaced as a raw HTTP 500. It reaches us only as
+# a JSON escape, which the server's own parser turns into a character no client could encode.
+# See `ReportCreate.strip_nul_bytes` and `AUDIT.md` 2026-08-26.
+#
+# THE OTHER UNSTORABLE CLASS IS DELIBERATELY NOT HANDLED HERE. A lone surrogate never reaches
+# a field validator at all - Pydantic rejects it while parsing the JSON string - so stripping
+# it here would be dead code. It crashed one layer further out, in FastAPI's own 422 handler,
+# and is fixed there (`main.py`, `validation_error_handler`).
+NUL_BYTE = re.compile("\x00")
+
 ReportStatus = Literal["processed", "processing_failed", "needs_review"]
 ReviewStatus = Literal["auto", "confirmed", "overridden"]
 EntityType = Literal["activity", "location", "equipment", "barrier_failure"]
@@ -55,6 +68,34 @@ class ReportCreate(BaseModel):
     site_id: UUID
     raw_text: str = Field(min_length=1, max_length=MAX_REPORT_CHARS)
     reporter_role: ReporterRole
+
+    @field_validator("raw_text")
+    @classmethod
+    def strip_nul_bytes(cls, value: str) -> str:
+        """Remove U+0000, which a Postgres `text` column cannot store.
+
+        NOT hypothetical and not a style rule: before this existed, a report containing
+        U+0000 returned a raw `HTTP 500 Internal Server Error` with a `text/plain` body from
+        the running API. `PRD.md` § Edge cases forbids that twice over - adversarial input
+        must not crash the pipeline, and a live demo must never see a raw 500. Found by
+        `scripts/check_edge_cases.py` against the real system, not reasoned about
+        (`AUDIT.md` 2026-08-26).
+
+        The character survives preprocessing and all three inference heads untouched;
+        Postgres is what rejects it, as `22P05`. `routes/reports.py` catches only `APIError`
+        code `23503`, so it escaped as a bare 500.
+
+        STRIPPED RATHER THAN REJECTED because § Edge cases says adversarial input earns a low
+        confidence, not a refusal, and U+0000 is invisible to whoever typed the report - a 422
+        would reject a genuine hazard report over a character its author cannot see. Every
+        text column derives from this one field (`cleaned_text` from it, `entity_text` sliced
+        out of that), so this single guard is what keeps all three storable.
+
+        Runs BEFORE `reject_blank_text` - validators fire in definition order - so text made
+        only of these collapses to empty here and is rejected as blank below, rather than
+        passing `min_length` on characters that cannot be stored.
+        """
+        return NUL_BYTE.sub("", value)
 
     @field_validator("raw_text")
     @classmethod

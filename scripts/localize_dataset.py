@@ -17,7 +17,8 @@ versions of the combined call, barrier-span coverage swung 19/20 -> 1/20 -> 14/2
 5/20 on wording changes alone, and IOGP coverage decayed 16/20 -> 6/20 as the rewrite
 instructions grew. A stage that only extracts cannot be crowded out by rewrite rules.
 
-The LLM is Groq's openai/gpt-oss-120b, over its OpenAI-compatible endpoint. Narratives
+The LLM is a fleet of models behind OpenAI-compatible endpoints - Groq's, plus Google's if
+GEMINI_API_KEY is set - tried in order and rotated when one runs out of capacity. Narratives
 go up BATCH_SIZE per request; each carries its own site, noise tier and mechanics, and a
 response that comes back the wrong length or out of order is retried as a whole batch.
 
@@ -133,6 +134,26 @@ NOISE_INSTRUCTIONS = {
 }
 
 BATCH_SIZE = 5  # narratives per request, in both stages. Index-matched by Python.
+
+# The model fleet, tried in order and rotated when one is exhausted. Every free tier here caps
+# tokens-per-minute *and* tokens-per-day, so no single model can finish a 1,200-row run
+# unattended: it stops at the daily wall partway through and waits for a human. Spreading the
+# run across models is what lets it finish overnight.
+#
+# Verified present on this account on 2026-08-26, by listing /v1/models on both endpoints and
+# then issuing this script's exact call shape (json_object + max_completion_tokens) to each.
+# Three models named in earlier plans are NOT here: llama-3.1-8b-instant, llama-3.3-70b-
+# versatile and mixtral-8x7b-32768 have been withdrawn from Groq and now 404 "does not exist
+# or you do not have access to it". gemini-flash-latest is left out on purpose - it answered
+# 503 "high demand" during that same check, and a floating alias can silently change model
+# underneath an unattended run.
+#
+# gpt-oss-20b stays first because the prompts were measured against it. The rest are capacity
+# fallbacks, not equals: prose quality across models is unverified, so rows produced after a
+# rotation are worth a spot-check before they are trusted.
+GROQ_MODELS = ["openai/gpt-oss-20b", "openai/gpt-oss-120b",
+               "qwen/qwen3.8-27b", "qwen/qwen3.6-27b"]
+GEMINI_MODELS = ["gemini-3.7-flash", "gemini-3.5-flash"]
 
 # ---------------------------------------------------------------------------
 # STAGE 1 - prose only. This prompt must never mention IOGP rules or precursors:
@@ -459,6 +480,86 @@ def names_a_control(text):
     return bool(text) and bool(CONTROL_PATTERN.search(text))
 
 
+# Substrings that mean a model is out of capacity. Matched on the message because the fleet
+# spans two endpoints that disagree in wording, and because some quota errors arrive wrapped in
+# a generic Exception with no status code left to read.
+EXHAUSTED_MARKERS = ("rate limit", "rate_limit", "too many requests", "quota",
+                     "resource_exhausted", "resource exhausted", "per day", "per-day")
+
+
+def is_exhausted(error):
+    """True if `error` means *this* model is out of capacity, so another model may still work.
+
+    Distinct from a bad batch on purpose: a malformed or misaligned response says nothing about
+    a model's quota, and rotating away on one would abandon a healthy model - while treating a
+    per-day 429 as merely retryable is exactly the wall the fleet exists to get past.
+
+    A 404 counts as exhausted too. A model withdrawn from the account is permanently out of
+    capacity, and three of this script's originally planned models were withdrawn in precisely
+    that way, so retrying one in place only burns the batch.
+    """
+    if getattr(error, "status_code", None) in (404, 429):
+        return True
+    text = str(error).lower()
+    if "does not exist or you do not have access" in text:
+        return True
+    return any(marker in text for marker in EXHAUSTED_MARKERS)
+
+
+def rotate_fleet(fleet):
+    """Move the current model to the back, in place, so fleet[0] is always the next to try.
+
+    Rotated in place and shared by every worker rather than copied per batch: a model that just
+    returned a per-day 429 is exhausted for the whole run, not only for the batch that found
+    out, so per-batch copies would each spend a wasted request rediscovering that. Nothing is
+    dropped - a per-minute window reopens, so a model parked at the back is still worth reaching
+    again later in a long run.
+    """
+    # ponytail: pop(0) and append are each atomic under the GIL, so concurrent workers can at
+    # worst rotate twice, never tear the list. A lock would buy ordering nobody here needs.
+    fleet.append(fleet.pop(0))
+
+
+def build_fleet(pinned=None):
+    """[(client, model)] in try order: Groq first, then Gemini if GEMINI_API_KEY is set.
+
+    Groq leads because the prompts were measured against gpt-oss-20b. Gemini is appended rather
+    than interleaved so a run only reaches a second vendor once the measured one is spent.
+
+    timeout: 60s is above the slowest observed batch and far below a stall, so a hung request
+    fails fast and the retry loop in call_llm_batch re-issues it. max_retries=0 keeps that loop
+    the single retry authority, instead of each visible attempt silently becoming several inside
+    the SDK - which against a rate-limited free tier is both fatal and invisible, and would also
+    hide the 429 that rotation needs to see.
+    """
+    fleet = []
+    groq_key = os.environ.get("GROQ_API_KEY")
+    if groq_key:
+        client = OpenAI(api_key=groq_key, timeout=60.0, max_retries=0,
+                        base_url="https://api.groq.com/openai/v1")
+        fleet += [(client, model) for model in GROQ_MODELS]
+    gemini_key = os.environ.get("GEMINI_API_KEY")
+    if gemini_key:
+        client = OpenAI(api_key=gemini_key, timeout=60.0, max_retries=0,
+                        base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
+        fleet += [(client, model) for model in GEMINI_MODELS]
+    if not fleet:
+        raise SystemExit(
+            "No GROQ_API_KEY or GEMINI_API_KEY in scripts/.env or backend/.env. See DIY.md - "
+            "no call was made and no output was written."
+        )
+    if pinned:
+        # --model pins one model, for reproducing a single model's output. Its client is
+        # whichever vendor's key covers it; an unknown name is a typo worth failing on, since
+        # discovering it after the run has started costs the whole batch.
+        matches = [entry for entry in fleet if entry[1] == pinned]
+        if not matches:
+            raise SystemExit(f"--model {pinned!r} is not in the fleet. Available: "
+                             + ", ".join(model for _, model in fleet))
+        return matches
+    return fleet
+
+
 def retry_delay(error, attempt):
     """Seconds to wait before re-issuing a failed batch.
 
@@ -473,7 +574,7 @@ def retry_delay(error, attempt):
     return 2 ** attempt + random.random()
 
 
-def call_llm_batch(client, model, prompt, count, required_field=None):
+def call_llm_batch(fleet, prompt, count, required_field=None):
     """One JSON batch request, with retries. Returns (results, prompt_tokens, completion_tokens).
 
     Shared by both stages: the failure modes are identical, and a misaligned response is as
@@ -481,8 +582,12 @@ def call_llm_batch(client, model, prompt, count, required_field=None):
     input, each self-labelled with the index it describes - a short, long, or reordered batch
     raises and the whole batch is retried, because a silently shifted result would attach one
     report's spans or narrative to another report's SIF label.
+
+    Attempts are budgeted so a full pass over the fleet is always possible before a batch is
+    given up on, while a one-model fleet keeps the five attempts this loop was measured with.
     """
-    for attempt in range(5):
+    for attempt in range(len(fleet) + 4):
+        client, model = fleet[0]
         try:
             response = client.chat.completions.create(
                 model=model, temperature=1.0,
@@ -509,19 +614,25 @@ def call_llm_batch(client, model, prompt, count, required_field=None):
                     raise ValueError(f"result {offset + 1} has no {required_field}")
             usage = response.usage
             return results, usage.prompt_tokens, usage.completion_tokens
-        except Exception as error:  # rate limit / transient 5xx / bad batch - back off, retry
+        except Exception as error:  # exhausted model / transient 5xx / bad batch - retry
             # A per-day quota is not transient: no backoff inside this run can clear it, and
-            # every attempt spends another request. Fail the batch now and let the .jsonl
-            # checkpoint resume it once the quota rolls over.
-            if "per day" in str(error).lower():
+            # every attempt spends another request. With no other model to move to, fail the
+            # batch now and let the .jsonl checkpoint resume it once the quota rolls over.
+            if len(fleet) == 1 and "per day" in str(error).lower():
                 raise
-            if attempt == 4:
+            if attempt == len(fleet) + 3:
                 raise
-            print(f"  retry {attempt + 1}: {type(error).__name__}: {error}")
-            time.sleep(retry_delay(error, attempt))
+            print(f"  retry {attempt + 1} on {model}: {type(error).__name__}: {error}")
+            if is_exhausted(error) and len(fleet) > 1:
+                rotate_fleet(fleet)
+                print(f"  WARNING {model} out of capacity, switching to {fleet[0][1]}")
+                time.sleep(5)  # let the switched-to model's own window breathe before reuse
+            else:
+                # Not a capacity problem, so the same model is still the right one to ask.
+                time.sleep(retry_delay(error, attempt))
 
 
-def localize_batch(client, model, batch):
+def localize_batch(fleet, batch):
     """Both LLM stages for one batch of (row, tier). Returns (records, tokens_in, tokens_out).
 
     Stage 1 rewrites the prose. Stage 2 then reads only the rewritten Indian text - never the
@@ -543,7 +654,7 @@ def localize_batch(client, model, batch):
         for index, ((row, tier), (site, region)) in enumerate(zip(batch, sites))
     )
     rewrites, in_1, out_1 = call_llm_batch(
-        client, model, PROMPT_REWRITE.format(n=len(batch), items=rewrite_items),
+        fleet, PROMPT_REWRITE.format(n=len(batch), items=rewrite_items),
         len(batch), required_field="localized_text",
     )
     texts = [to_ascii_punctuation(result["localized_text"]).strip() for result in rewrites]
@@ -554,7 +665,7 @@ def localize_batch(client, model, batch):
         for index, ((row, _), text) in enumerate(zip(batch, texts))
     )
     extracts, in_2, out_2 = call_llm_batch(
-        client, model,
+        fleet,
         PROMPT_EXTRACT.format(n=len(batch), items=extract_items,
                               iogp_list=" | ".join(IOGP_RULES)),
         len(batch),
@@ -648,6 +759,30 @@ def verify_rule():
         ("control scan passes empty", names_a_control(""), False),
     ]
 
+    # The fleet must rotate away from an exhausted model and stay put on a bad batch: rotating
+    # on a malformed response abandons a healthy model, while not rotating on a quota error is
+    # the wall the fleet exists to get past. Both directions are asserted so neither regresses.
+    class FakeError(Exception):
+        def __init__(self, message, status_code=None):
+            super().__init__(message)
+            self.status_code = status_code
+
+    checks += [
+        ("exhausted reads 429", is_exhausted(FakeError("Rate limit reached", 429)), True),
+        ("exhausted reads per-day", is_exhausted(FakeError("quota exceeded per day")), True),
+        ("exhausted reads gemini", is_exhausted(FakeError("RESOURCE_EXHAUSTED")), True),
+        ("exhausted reads withdrawn", is_exhausted(FakeError(
+            "The model `x` does not exist or you do not have access to it.")), True),
+        ("exhausted ignores bad batch",
+         is_exhausted(ValueError("asked for 5 results, got 4")), False),
+        ("exhausted ignores timeout", is_exhausted(FakeError("Request timed out")), False),
+    ]
+    order = [("client", "first"), ("client", "second"), ("client", "third")]
+    rotate_fleet(order)
+    checks += [("fleet rotates to next", order[0][1], "second"),
+               ("fleet parks exhausted last", order[-1][1], "first"),
+               ("fleet drops nothing", len(order), 3)]
+
     failed = 0
     for name, got, want in checks:
         ok = got == want
@@ -665,7 +800,10 @@ def main():
     parser.add_argument("--count", type=int, help="full run: N rows into data/processed/")
     parser.add_argument("--out", help="write to this .jsonl instead of the default "
                                       "data/sample or data/processed path")
-    parser.add_argument("--model", default="openai/gpt-oss-20b")
+    parser.add_argument("--model", help="pin the run to one model from the fleet instead of "
+                                       "rotating through all of them. For reproducing a "
+                                       "single model's output; a pinned run stops at that "
+                                       "model's daily quota")
     parser.add_argument("--target-id", help="generate this OSHA ID only, bypassing the "
                                             "seeded sample draw. For re-testing one row")
     parser.add_argument("--workers", type=int, default=1,
@@ -688,19 +826,8 @@ def main():
 
     load_dotenv("scripts/.env")
     load_dotenv("backend/.env")
-    key = os.environ.get("GROQ_API_KEY")
-    if not key:
-        raise SystemExit(
-            "GROQ_API_KEY not found in scripts/.env or backend/.env. See DIY.md — "
-            "no call was made and no output was written."
-        )
-    # timeout: 60s is above the slowest observed batch and far below a stall, so a hung
-    # request fails fast and the retry loop in localize_batch re-issues it. max_retries=0
-    # keeps that loop the single retry authority, instead of 5 visible attempts each
-    # silently becoming 3 in the SDK — which against a rate-limited free tier is both
-    # fatal and invisible.
-    client = OpenAI(api_key=key, timeout=60.0, max_retries=0,
-                    base_url="https://api.groq.com/openai/v1")
+    fleet = build_fleet(args.model)
+    print(f"fleet: {' -> '.join(model for _, model in fleet)}")
 
     print(f"applying LABELING_RULE.md to {RAW_CSV} ...")
     frame = load_labeled_frame()
@@ -733,8 +860,7 @@ def main():
     started = time.time()
     with open(out_path, "a", encoding="utf-8") as handle, \
             ThreadPoolExecutor(max_workers=args.workers) as pool:
-        futures = [pool.submit(localize_batch, client, args.model, batch)
-                   for batch in batches]
+        futures = [pool.submit(localize_batch, fleet, batch) for batch in batches]
         for batch, future in zip(batches, futures):
             try:
                 records, tokens_in, tokens_out = future.result()

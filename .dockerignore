@@ -1,0 +1,23 @@
+# NOTE THE `**` ON EVERY PATTERN. `.dockerignore` is NOT `.gitignore`: its patterns are matched
+# against paths relative to the build context root, so a bare `.env` matches only a root-level
+# `.env` and would NOT exclude `backend/.env`. Both files this really has to keep out of the image
+# live one level down, so the prefix is load-bearing, not decoration.
+
+# Credentials. `backend/.env` holds the service-role key. It is gitignored, so it cannot reach the
+# Space through git — but a local `docker build` would copy it straight into the image.
+**/.env
+**/.env.*
+!**/.env.example
+
+# `COPY backend/ ./` would otherwise pull in `backend/.venv/` — a whole second Python install.
+**/.venv/
+**/__pycache__/
+**/*.pyc
+**/.ruff_cache/
+
+# Below this line is build SPEED, not image contents: `COPY backend/ ./` never copies these, but
+# every excluded path is one the daemon no longer has to receive as build context. `node_modules/`
+# alone is the bulk of the repo.
+frontend/
+data/
+.git/

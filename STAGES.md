@@ -9,49 +9,74 @@ Status marks: `[ ]` not started · `[~]` in progress · `[x]` done and verified.
 ## Current Position
 
 ```
-DAY:        Day 1 — Baseline
+DAY:        Day 1 - Baseline
 MODE:       A (sequential, solo)
-ACTIVE:     Block 7 — Frontend. Steps 7A AND 7B BUILT, NOT SIGNED OFF.
-            7A shipped: `lib/api_client.ts` (single HTTP layer, 8 typed functions, FROZEN),
-            `lib/supabase_client.ts` (anon key only), `lib/user_role.ts` (privilege rule),
-            `lib/precursor_spans.ts` (span slicing), `middleware.ts` (auth boundary),
-            `app/layout.tsx` (FROZEN) + header, login, `app/intake/`, `app/reports/[id]/`,
-            `app/report_result.tsx` (one renderer, both pages). New: `backend/routes/sites.py`
-            + 2 lines in FROZEN `main.py` — STILL NEEDS RETROACTIVE SIGN-OFF (DIY.md).
-            7B shipped: `app/dashboard/` (page + density_table + kpi_cards +
-            rule_distribution_chart + high_risk_feed) and `app/review/` (page + queue_row).
-            One new dependency: `recharts@3.10.1`, exact pin. One line added to
-            `app/app_header.tsx`: a /review nav link (not FROZEN; role-gating is a DIY call).
-            THE BLOCKER IS GONE: `backend/.env` now holds the service-role key, the database
-            is reachable, and every 7B check below ran against it — not a stub.
-            VERIFIED IN 7B: tsc 0 / lint 0 / build 0, all 7 routes compile. Density ranking
-            matched an INDEPENDENT hand computation on 7 sites, 0 mismatches, and the
-            small-denominator property held (12-of-20 at 60% correctly outranks 1-of-1 at
-            100%). Full review loop proven on BOTH paths with the DB row read before and
-            after: an ambiguous 20-char report scored 0.5, did NOT auto-publish, appeared in
-            the queue, and Confirm/Override wrote `confirmed`/`overridden` + `reviewed_by`,
-            flipped `reports.status` to `processed`, left `confidence` untouched, and left the
-            queue. Empty-database render verified for all 5 components. All 42+2 test rows
-            deleted; DB back to reports=2.
-            NOT VERIFIED, exit criteria NOT met: both-roles redirect is still unproven end to
-            end — no auth account has `app_metadata.role` set, so every real session reads
-            "no role set" and lands on /intake (DIY.md, unchanged). Nothing has been clicked
-            in a real browser with a real session; the UI write path was exercised through the
-            exact payloads the pages send, not through the DOM.
-            See AUDIT.md 2026-08-26 (7 entries from 7A, 11 from 7B).
-REMAINING:  Block 7 exit needs the two demo accounts with `app_metadata.role` set, then a
-            real signed-in pass over both roles. Then Block 8 (real model weights) and
-            Block 9 (close-out, PATTERNS.md, deploy).
-BLOCKED:    Block 3 — the 1,200-row generation run has NOT been started. Groq free tier is
-            ~200,000 tokens/day/model against ~1.9M needed, so this is multi-day or needs a
-            paid tier. `scripts/split_dataset.py` handles a partial checkpoint, so Lane A can
-            be fed from however many rows exist. See AUDIT.md 2026-08-25.
+ACTIVE:     Block 9 - Baseline close-out. THREE of four items now done: 9.1 `PATTERNS.md`, the
+            demo seed (item 1, PARTIAL - 20 rows not ~50), and the edge-case table (item 2, MET).
+            Only DEPLOY (item 4) remains in this block.
+            9.2 SHIPPED: three re-runnable check scripts, all run against the live API on 8001 -
+            `scripts/check_edge_cases.py` 16/16, `scripts/check_prompt_injection.py` 17/17,
+            `scripts/check_empty_database.py` 6/6 (it snapshots, empties and restores all six
+            tables, verifying the restore by id SET, not by row count). Plus
+            `scripts/seed_demo_reports.py`, which pushes dataset rows through the real
+            `POST /api/v1/reports` rather than writing tables directly.
+            TWO REAL BUGS FOUND AND FIXED, both raw `HTTP 500`s that `PRD.md` forbids: U+0000 in
+            report text (Postgres `22P05`, uncaught because `_insert_report` catches only
+            `23503`) and a lone surrogate (crashed FastAPI's OWN 422 handler on
+            `.encode("utf-8")` - validation worked, reporting it did not). Fixed in
+            `backend/schemas.py` and `backend/main.py` respectively. BOTH FILES ARE FROZEN, so
+            both need retroactive integrator sign-off - `DIY.md`, two items at the top.
+            Both are pinned as regression cases; an emoji (valid surrogate pair) is asserted to
+            still round-trip, so the fix did not over-scrub.
+            DATABASE NOW: reports 26, classifications 26, iogp_tags 20, precursors 71, sites 8,
+            users 3. That is 20 seeded + 6 earlier test rows; every check script deletes its own
+            rows and all 26 classifications carry `model_version = 'interim-keyword-0.1'`.
+            LATENCY, corrected: the seed run's median 2939 ms was NOT pipeline cost. Inference is
+            5.6 ms total; one Supabase round trip is 85 ms; the same ingest in-process is 376 ms.
+            `localhost` resolves to `::1` first while uvicorn binds IPv4-only, so each new
+            connection paid a failed IPv6 attempt - with a reused connection both hosts are
+            ~384 ms, inside the 3s target. See PORTS below and `AUDIT.md` 2026-08-26.
+            NOT VERIFIED, and logged open rather than smoothed over: NO PAGE WAS RENDERED IN A
+            BROWSER this block. There is no Playwright in the repo and the pages are
+            client-rendered, so the empty-database case is proven at the API layer and the
+            injection case structurally (no `dangerouslySetInnerHTML`/`innerHTML`/`eval` in any
+            of 23 frontend files) - neither was seen on a screen.
+REMAINING:  Block 7 exit - one real signed-in browser pass over both roles, which is also what
+            closes the "no page rendered" finding above. Note `DIY.md` now marks the demo-account
+            and `users`-row items DONE, so this block's earlier "no auth account has
+            app_metadata.role set" text was stale; the browser pass itself is what is left, and
+            it was not re-verified here. Block 8 (real weights; `grep` must then find no
+            INTERIM_LANE_A, and Lane A re-runs the demo seed). Block 9 item 4 - deploy.
+BLOCKED:    Block 3 - the 1,200-row generation run has NOT been started. Groq free tier is
+            ~200,000 tokens/day/model against ~1.9M needed, so this is multi-day or needs a paid
+            tier. This is also why the demo seed is 20 rows and not ~50: `data/processed/` holds
+            0 rows and the reviewed corpus is the 20 in `data/sample/`.
             Block 6 training stays blocked behind the dataset.
-NEXT:       Create the two demo accounts with `app_metadata.role` set (DIY.md) — the last
-            thing gating Block 7's exit criteria. Everything else in Block 7 is verified.
-PORTS:      Port 8000 is occupied by an UNRELATED service (returns a `version` field; ours
-            does not). This backend runs on 8001: `uvicorn main:app --port 8001`.
-            `frontend/.env.local` already points at 8001. Start nothing on 8000.
+DEPLOY:     Block 9 item 4 - CONFIGURATION WRITTEN, NOTHING PUSHED. Three new root files, no
+            existing file changed and no FROZEN file touched: `Dockerfile` (python:3.11-slim,
+            `COPY backend/ ./`, uvicorn on 7860, non-root uid 1000), `.dockerignore` (every
+            pattern `**`-prefixed - `.dockerignore` is not `.gitignore`, a bare `.env` would NOT
+            have excluded `backend/.env` and its service-role key), and `README.md` whose YAML
+            frontmatter IS the HF Spaces config (`sdk: docker`, `app_port: 7860` = the CMD port).
+            `frontend/` -> Vercel with Root Directory `frontend`; backend -> HF Space, which is
+            its own git repo reached by a SECOND remote, so GitHub's main protection is untouched.
+            VERIFIED: `npm run build` passes, 7/7 pages, no type or lint error.
+            NOT VERIFIED: `docker build` never ran - no Docker daemon on this machine. The
+            Dockerfile is reviewed but unbuilt; the Space's build log is the first real test.
+            NO WEIGHTS NEEDED: inference is still INTERIM_LANE_A keyword code, so the image needs
+            no ML library at all. The deploy does not wait on Block 8.
+            CORS is an explicit one-origin allowlist, never a wildcard (the API has no auth and
+            holds the service-role key). Consequence, accepted and logged: Vercel PREVIEW
+            deployments will fail CORS - demo from the production URL.
+NEXT:       The 8 deploy steps in `DIY.md` are the human's to run; the agent flags ready and does
+            not push. The both-roles browser pass can run in parallel.
+PORTS:      Port 8000 is occupied by an UNRELATED service (returns a `version` field; ours does
+            not). This backend runs on 8001: `uvicorn main:app --port 8001`. Start nothing on
+            8000. USE `http://127.0.0.1:8001`, NOT `localhost:8001`, for any local timing: the
+            IPv4-only bind makes `localhost` pay a failed IPv6 attempt per connection
+            (`GET /health` 2649 ms vs 615 ms). `frontend/.env.local` points at `localhost:8001`,
+            which is correct for the browser (it keeps connections alive) but wrong for
+            benchmarking.
 INTEGRATOR: Swayam (sole owner of merges and FROZEN files)
 ```
 
@@ -158,9 +183,56 @@ Work blocks top to bottom. Do not start a later block's deliverable early. Two b
 - Exit: same frontend, unchanged, now serving real model output; `grep` confirms no interim implementation remains
 
 ## Block 9 — Baseline close-out
-- [ ] ~50 pre-seeded processed reports (demo-day network-lag fallback)
-- [ ] `PRD.md` edge-case table run against the real running system — one pass/fail line per case in `AUDIT.md`
-- [ ] **`PATTERNS.md` written** — the reference implementation index: how a route is written, how a page fetches, how errors surface, how a migration is added, naming conventions, and the file-ownership map below. Every Day 2–4 session reads this instead of re-deriving conventions.
+- [~] ~50 pre-seeded processed reports (demo-day network-lag fallback)
+- **[~] PARTIALLY MET 2026-08-26 - 20 rows, not ~50, and the shortfall is the dataset:**
+  `scripts/seed_demo_reports.py` pushed all 20 rows of `data/sample/localized.jsonl` through the
+  real `POST /api/v1/reports`, so they are genuinely processed rows with real classifications,
+  tags and spans - not hand-written rows. It cannot reach 50 because `data/processed/` holds 0
+  rows (Block 3 never started). Rows were NOT padded by duplicating narratives: that inflates
+  every density denominator, and the ranking table is the screen `PRD.md` calls the literal
+  expected outcome. The 5 unique rows in `data/scratch/` were also left out - `AUDIT.md` records
+  that directory as not a corpus. Stays `[~]` until the dataset can supply ~50.
+  SHAPE, all counted: sif true 11 / false 9; `processed` 14 / `needs_review` 6; 13 IOGP tags over
+  11 rows, 9 untagged; 63 precursor spans; en 12 / hi-en 8; spread over **12 distinct days** and
+  all 8 sites, giving **6 distinct rank_scores** - Moran 1/1 at 100% correctly ranks BELOW
+  Naharkatiya 2/3 at 67%. Every row carries `model_version = 'interim-keyword-0.1'` and is STALE
+  at the Block 8 swap - Lane A re-runs the script (`DIY.md`).
+- [x] `PRD.md` edge-case table run against the real running system — one pass/fail line per case in `AUDIT.md`
+- **[x] EXIT MET 2026-08-26, and it found two real bugs:** every case was RUN against the live API
+  with actual input, never marked done by reasoning. Three new scripts, all re-runnable:
+  `scripts/check_edge_cases.py` **16/16**, `scripts/check_prompt_injection.py` **17/17**,
+  `scripts/check_empty_database.py` **6/6**. Per-case pass/fail lines with the input used and the
+  observed behaviour are in `AUDIT.md` 2026-08-26.
+  TWO RAW HTTP 500s FOUND AND FIXED, both forbidden by § Edge cases: (1) U+0000 in report text -
+  Postgres `22P05`, uncaught because `_insert_report` catches only `23503`; fixed by a validator
+  in `schemas.py`. (2) a lone surrogate - crashed FastAPI's **own** 422 handler on
+  `.encode("utf-8")`, so validation worked and *reporting* it failed; fixed by an app-wide
+  handler in `main.py`. Both files are FROZEN, so both need integrator sign-off (`DIY.md`).
+  Both are now pinned as regression cases, and a valid surrogate pair (emoji) is asserted to
+  still round-trip, proving the fix did not over-scrub.
+  INJECTION - the case the brief weights most: the hazard sentence alone scores True/0.92, and
+  all 5 injection payloads left the verdict at True/0.92 with tags intact. Text is stored
+  character-for-character; `{{7*7}}` never became `49`; the `DROP TABLE` payload left every table
+  present with exact expected counts; the service-role key is never echoed. Structurally there is
+  no interpreter to reach - no LLM/outbound-HTTP client in any of 17 backend files, no
+  `eval`/`exec`/`__import__`, `localize_dataset.py` imported by nothing, and no
+  `dangerouslySetInnerHTML`/`innerHTML`/`eval` in any of 23 frontend files.
+  NOT VERIFIED, logged open rather than smoothed over: **no page was rendered in a browser**. No
+  Playwright in the repo and the pages are client-rendered, so the empty-database case is proven
+  at the API layer and the injection case structurally - neither on a screen (`DIY.md`).
+  Two of my own checks were wrong before the code was: an assertion flagged `RuntimeError` (the
+  deliberate `type(error).__name__`) as a leaked traceback, and the dynamic-execution scanner's
+  `compile\(` matched `re.compile(` and reported 4 false findings. Both corrected, and the
+  scanner now carries a positive control.
+- [x] **`PATTERNS.md` written** — the reference implementation index: how a route is written, how a page fetches, how errors surface, how a migration is added, naming conventions, and the file-ownership map below. Every Day 2–4 session reads this instead of re-deriving conventions.
+- **[x] EXIT MET 2026-08-26 for this item only:** written from the actual code, not from
+  intentions - every command in its § 0 table was run first (7/7 passing) and every abstract
+  rule points at a real file. It states our own violations rather than the aspiration: the 8
+  files over the ~200-line limit and their `AUDIT.md` acceptances, the missing `ruff`, and two
+  docstrings whose commands do not run. § 9 gives four lanes the real numbers - 0 rows in
+  `data/processed/`, 20 in `data/sample/`, no `data/test/`, 6 `INTERIM_LANE_A` markers,
+  1-of-20 barrier spans, nothing deployed - each with an owner and a day. See DECISIONS.md
+  2026-08-26 for why the violations are named instead of omitted.
 - [ ] Deploy: frontend → Vercel, backend → Render/Railway/HF Spaces. Full flow tested on deployed URLs, not just localhost.
 - Do NOT: deploy without explicit human sign-off, skip `PATTERNS.md` because the code "reads clearly" — five parallel agents will each invent their own conventions without it
 - Exit: a complete unassisted run works on deployed URLs; `PATTERNS.md` committed
