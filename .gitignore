@@ -34,3 +34,5 @@ model_weights/
 *.safetensors
 
 # Do NOT ignore .claude, .agents, or *.md
+meta_roadmap.md
+meta_roadmap.md

@@ -9,53 +9,68 @@ Status marks: `[ ]` not started · `[~]` in progress · `[x]` done and verified.
 ## Current Position
 
 ```
-DAY:        Day 2 - Tier 1 depth
-MODE:       B (parallel lanes)
-ACTIVE:     All four lanes - A (model quality), B (analytics & dashboard), C (review & intake),
-            D (Tier 2 & hardening). Day 2 task list is below under "Day 2 - Tier 1 depth"; lane
-            ownership and the FROZEN list are further down THIS file and are read-only for lanes.
+DAY:        Day 2 CLOSED - all four lanes merged and integrator-verified 2026-08-27.
+MODE:       Transitioning to the single remaining milestone: FINAL CONSOLIDATION (see below).
+            Days 3, 4 and 5 are collapsed into it. Lane ownership and the FROZEN list below
+            still apply.
 INTEGRATOR: Swayam (sole owner of merges and FROZEN files)
 
-DEPLOYED:   Live and smoke-tested end to end on 2026-08-26, zero CORS errors (`AUDIT.md`).
-            frontend -> Vercel, Root Directory `frontend`.
-            backend  -> Render Web Service, native Python 3 runtime, Root Directory `backend`,
-                        `uvicorn main:app --host 0.0.0.0 --port $PORT`, deploys on push to `main`.
-            database -> Supabase managed Postgres.
-            The root `Dockerfile` is on NO deploy path - it was written for Hugging Face Spaces,
-            which was dropped because its Docker environments are paid (`DECISIONS.md`
-            2026-08-26). Deletion is flagged in `DIY.md`.
-            Render free tier spins down when idle: wake it before the demo, not at it. Its
-            512 MB memory ceiling is the constraint to check before Block 8 adds `torch`.
-            `GEMINI_API_KEY` is scrubbed from `backend/.env` and set on neither platform - the
-            runtime backend and the offline generation scripts now share no credential.
+VERIFIED ON MERGED `main` 2026-08-27 (every number run, none carried over):
+            pytest 21 passed / 1 xfailed / 0 failed  ·  inference self-check 22/22
+            npx tsc --noEmit 0 errors  ·  npx eslint . 0 problems  ·  npm run build succeeds
+            density.py self-check passed  ·  span invariant 81/81 spans, 0 mismatches
+            `ruff` STILL absent from the venv and both requirements files, so the backend has
+            no linter and none ran. `CLAUDE.md` documents `ruff check .`; it does not run.
 
-BASELINE:   Day 1 closed. Blocks 1,2,4,5,7,9 done. `PATTERNS.md` is the reference implementation
-            every lane copies - read it in full before writing code.
-            Demo seed is 20 rows, not ~50 (`data/processed/` holds 0). Database: reports 26,
-            classifications 26, iogp_tags 20, precursors 71, sites 8, users 3. All 26
-            classifications carry `model_version = 'interim-keyword-0.1'` and are STALE the
-            moment real weights land - Lane A re-runs `scripts/seed_demo_reports.py`.
-            Three re-runnable check scripts pass against the API: edge cases 16/16, prompt
-            injection 17/17, empty database 6/6.
+DEPLOYED:   CHANGED 2026-08-27 - Render is RETIRED as the backend host (`DECISIONS.md`).
+            frontend -> Vercel, Root Directory `frontend` (unchanged).
+            backend  -> localhost FastAPI exposed by a secure tunnel (`cloudflared` /
+                        `localtunnel`). Forced by two measured blockers, neither configurable
+                        away: 885 MB site-packages + 537 MB weights vs Render free tier's
+                        512 MB ceiling, and `model_weights/` is `.gitignore`d so the weights
+                        cannot reach Render by push at all.
+            database -> Supabase managed Postgres (unchanged).
+            NOT YET MEASURED: nothing has been tunnelled or timed. The "~60 ms" figure behind
+            this choice is a target, not an observation - it is deliberately in `DECISIONS.md`
+            and NOT in `AUDIT.md`. Only measured latency is local: ~384 ms pipeline, 5.6 ms
+            inference. Tunnel URL changes on restart unless NAMED, and
+            `NEXT_PUBLIC_API_BASE_URL` is baked at Vercel build time -> redeploy (`DIY.md`).
+            The root `Dockerfile` is on NO deploy path; deletion still flagged in `DIY.md`.
 
-BLOCKED:    Block 3 - the 1,200-row generation run has NOT been started. Groq free tier is
-            ~200,000 tokens/day/model against ~1.9M needed, so this is multi-day or needs a paid
-            tier. Block 6 training and Block 8 (real weights, then `grep` must find no
-            INTERIM_LANE_A) stay blocked behind the dataset. Lane A gets whatever
-            `split_dataset.py` produces from the rows that exist.
+BASELINE:   Block 8 is DONE - real weights are live, not blocked. `grep` finds 0 `INTERIM_LANE_A`,
+            0 `INTERIM`, 0 `TODO`, 0 `FIXME` in any `.py`/`.ts`/`.tsx` under `backend/`
+            or `frontend/`. Live weights (513 MB in `backend/model_weights/`) are byte-identical
+            to Lane A's retrained staging copy - sha256 verified, so the swap `DIY.md` asks for
+            is already done and repo-root `model_weights/` is a redundant 257 MB.
+            SIF CLASSIFIER, held-out test n=49: accuracy 0.5918, F1 0.5833, separation +0.1126,
+            T 1.2011, 12 of 49 below the 0.65 threshold. Weak but no longer degenerate - it
+            predicts both classes and the auto-publish path exists. Validation n=42: 0.6905.
+            DATABASE, counted 2026-08-27: reports 50, classifications 50, iogp_tags 46,
+            precursors 139, sites 8, users 3. `model_version` 40 `distilbert-sif-1.0` +
+            10 `interim-keyword-0.1` (the 10 ad-hoc rows `DIY.md` asks a decision on - one
+            holds the project's only human `overridden` decision). Reports: 39 `needs_review`,
+            11 `processed`. Reviews: 46 auto, 2 confirmed, 2 overridden.
+            DATASET: `data/processed/localized.jsonl` 326 rows, `train.jsonl` 277,
+            `data/test/test.jsonl` 49, `data/sample/localized.jsonl` 20. Block 3's 1,200-row
+            target was never reached and is not being pursued (Groq token ceiling, `DIY.md`).
+            DEMO SEED now 50 processed reports, which MEETS Block 9's "~50" line that was
+            partial at 20 - composition stated above rather than presented as a clean 50.
+            `PATTERNS.md` is still the reference implementation every lane copies.
 
-OPEN:       NO PAGE HAS BEEN RENDERED IN A BROWSER BY AN AGENT. There is no Playwright in the
-            repo and the pages are client-rendered, so the empty-database case is proven at the
-            API layer and the injection case structurally - neither was seen on a screen. The
-            signed-in pass over both roles (Block 7 exit) is still the human's, on the live URLs.
-            Deployed ingest latency not re-measured. Two FROZEN-file sign-offs from Block 9
-            (`schemas.py` NUL strip, `main.py` 422 handler) still unconfirmed in `DIY.md`.
+KNOWN OPEN: NO PAGE HAS BEEN RENDERED IN A BROWSER BY AN AGENT. Unchanged and still the biggest
+            gap: no Playwright in the repo and the pages are client-rendered, so the empty-database
+            case is proven at the API layer and injection structurally - neither on a screen.
+            The signed-in pass over both roles is the human's, on the live URLs (`DIY.md`).
+            `PATTERNS.md` and `README.md` still carry stale INTERIM_LANE_A prose (`DIY.md`).
+            PII redaction and near-duplicate detection are tested but wired into NO production
+            path - 9 of 22 tests exercise code that cannot run in production (`AUDIT.md`).
+            Tagger covers 8 of 9 IOGP rules; `Work Authorisation` has 0 training rows and is
+            untrainable, so the system must NOT be described as covering all 9.
 
 PORTS:      Local only. Port 8000 is occupied by an UNRELATED service; this backend runs on 8001.
             USE `http://127.0.0.1:8001`, NOT `localhost:8001`, for any local timing: the
             IPv4-only bind makes `localhost` pay a failed IPv6 attempt per connection
-            (`GET /health` 2649 ms vs 615 ms). Real pipeline cost is ~384 ms, inference 5.6 ms of
-            it. Irrelevant on Render, where the bind is `0.0.0.0`.
+            (`GET /health` 2649 ms vs 615 ms).
 ```
 
 Update this block on every day change, lane change, and block completion. It is the first thing any agent reads after a context clear.
@@ -263,26 +278,78 @@ Cross-lane need → stop, log it in `DIY.md` as a cross-lane request, keep worki
 
 One branch per lane per day: `lane-a/day2`, `lane-b/day2`, … Push to the branch, never to `main`. The integrator reviews and merges. A lane that force-pushes, rebases `main`, or merges its own branch has broken the model.
 
-## Day 2 — Tier 1 depth
-- [ ] Lane A: real acronym dictionary, spellcheck tuning, expanded NER ruler, error analysis on the held-out set
-- [ ] Lane B: density ranking correctness + drill-down, rule distribution chart, KPI accuracy
-- [ ] Lane C: confirm/override write path, review-queue filtering, intake validation and error states
-- [ ] Lane D: edge-case test suite from `PRD.md`, PII name redaction
-- Exit: every lane's work merged to `main`, `main` still passes the full login → submit → dashboard flow
+## Day 2 — Tier 1 depth — CLOSED 2026-08-27
+- [x] Lane A: real acronym dictionary (45 -> 94 applied, 11 -> 21 unverified), spellcheck tuning, expanded NER ruler (111 mined patterns, SpanRuler), error analysis on the held-out set, retrained SIF classifier
+- [x] Lane B: density ranking correctness + drill-down, rule distribution chart, KPI accuracy
+- [x] Lane C: confirm/override write path, review-queue filtering, intake validation and error states
+- [~] Lane D: edge-case test suite from `PRD.md`, PII name redaction — **suite real and green, but PII redaction and near-duplicate detection are wired into NO production path** (`AUDIT.md` 2026-08-27). Stays `[~]` until that cross-lane decision lands.
+- **[x] EXIT MET 2026-08-27, integrator-verified after force-correction.** Every lane merged to `main`.
+  Verified by running, not by reading: pytest **21 passed / 1 xfailed / 0 failed**, inference
+  self-check **22/22**, `npx tsc --noEmit` **0 errors**, `npx eslint .` **0 problems**,
+  `npm run build` **succeeds**, `density.py` self-check passed, span invariant **81 spans /
+  0 mismatches** on the real corpus through the real pipeline.
+  EIGHT force-corrections were required first, all logged in `AUDIT.md` § "Day 2 corrections":
+  the span-integrity test was never collected (hyphenated filename) and 3 of its 4 tests were
+  passing vacuously on a wrong corpus path; `pytest` was in no requirements file and the suite
+  could not run in EITHER interpreter as merged; one real tagger failure pinned as a strict
+  `xfail` rather than weakened; three stale prose claims that the code contradicted.
+  NOT MET and not marked met: the full flow has **never been driven through a browser** — that
+  is the human's signed-in pass on the live URLs (`DIY.md`).
 
-## Day 3 — Tier 2 + integration
-- [ ] Lane A: threshold re-tune on real reviewed data, per-rule F1 improvement logged
-- [ ] Lane B: dashboard load under 2s with full seeded dataset (measured, logged)
-- [ ] Lane C: full role-based access verified, both roles end to end
-- [ ] Lane D: Trends page — labeled "illustrative, synthetic data only," never framed as forecasting. Simulated in-app alert only, never a real SMS/WhatsApp call.
-- Exit: all Tier 1 solid, Tier 2 additions labeled honestly, `main` green
+---
 
-## Day 4 — Hardening, deploy, rehearsal
-- [ ] Every `PRD.md` edge case re-run on the **deployed** system, one pass/fail line each in `AUDIT.md`
-- [ ] Non-functional requirements measured on deployed URLs: inference under 3s, dashboard under 2s
-- [ ] Full demo dry run with zero manual workarounds
-- [ ] **Feature freeze end of day.** After freeze: bug fixes only.
-- Exit: unassisted end-to-end dry run succeeds on deployed URLs
+# FINAL CONSOLIDATION, INTEGRATION & DEMO FREEZE — the only remaining milestone
 
-## Day 5 — Buffer
-Nothing scheduled. If Day 5 has planned work in it, the plan has already failed.
+Days 3, 4 and 5 are **collapsed into this single milestone** as of 2026-08-27. There is no Day 3
+work, no Day 4 work, and no Day 5 buffer to fall back on: the buffer has been spent on Day 2's
+corrections. Anything not in the Hard Scope Lock below is cut.
+
+## Hard Scope Lock — the demo is these four screens and nothing else
+
+Locked 2026-08-27. All four are built and running today; this milestone hardens them, it does not
+extend them. **No new feature enters this list.** A defect in one of these four outranks every
+other piece of work in the repo.
+
+1. **Intake** — submit renders the result inline, no navigation. The hero interaction.
+2. **Report Detail ("Magic View")** — colour-coded precursor highlighting from real spans, verdict
+   badge, confidence, IOGP chips. Span exactness verified at 81/81 spans, 0 mismatches.
+3. **Density Ranking + drill-down** — the literal expected-outcome line of the problem statement.
+   Wilson lower bound ordering, click a row for the reports behind its score.
+4. **Review Queue** — low-confidence reports, confirm/override writing through to the database.
+
+**Explicitly CUT, and to be described as scoped-out-on-purpose if a judge asks** (not as
+unfinished): the Trends page, the simulated in-app alert, wiring PII redaction or near-duplicate
+detection into the ingest path, any further model training, any Render/cloud backend deploy, and
+the 1,200-row dataset target.
+
+## Final Sprint Worklist — in this order
+
+**1. Localhost tunnel + Vercel live verification.**
+- [ ] Bring up a **named** tunnel (`cloudflared` / `localtunnel`) to the local backend on 8001. Named, because an ad-hoc URL changes on restart and `NEXT_PUBLIC_API_BASE_URL` is baked into the Vercel bundle at **build** time — a restarted tunnel then needs a redeploy, not a restart.
+- [ ] Add the tunnel origin to the backend's `FRONTEND_ORIGINS`, and set `NEXT_PUBLIC_API_BASE_URL` to the tunnel host with **no trailing slash**. A trailing slash breaks the CORS match with an opaque error that looks like the API is down.
+- [ ] **The signed-in browser pass, both roles, on the live URLs.** This is the single largest open gap in the project: no page has ever been rendered in a browser by an agent. Walk all four locked screens as `hse_manager` and as `site_supervisor`, and confirm the empty states and a stored injection payload render as inert text.
+- [ ] **Measure and log real numbers through the tunnel** — ingest latency against the 3s target, dashboard load against the 2s target. The "~60 ms" figure behind the tunnel decision is a target, not an observation, and no measured tunnel number exists yet. Log whatever it actually is in `AUDIT.md`, including a bad result.
+- Exit: all four locked screens work end to end from the Vercel URL through the tunnel, in a browser, on both roles, with measured latency logged.
+
+**2. `FALLBACK.md` — the live-demo resilience playbook.**
+- [ ] Write it for the failure modes this architecture actually has, in the order they are likely: tunnel drops mid-demo; venue network fails; laptop sleeps or the uvicorn process dies; Supabase unreachable; a submitted report returns 502.
+- [ ] For each: the symptom on screen, the recovery command, and the fallback if recovery takes longer than a few seconds. The 50 pre-seeded processed reports exist precisely so Dashboard and Density stay real if live inference stalls — say so, and name the screens that keep working.
+- [ ] Include the pre-demo checklist: tunnel up and reachable, backend warm (the first inference pays a ~1.4 s model load), 50 seed rows present, both demo accounts able to sign in.
+- Exit: `FALLBACK.md` committed, and every recovery command in it has been **run once** rather than only written down.
+
+**3. Team presentation rehearsal and judge Q&A drill.**
+- [ ] One full dry run with zero manual workarounds, on the live stack, timed.
+- [ ] Rehearse the honest answers, because the weak numbers are in the repo and a judge may find them: test accuracy **0.5918** on n=49 and what that does and does not license us to claim; separation +0.1126 against validation's +0.2662, which is overfitting on 235 rows; the tagger covers **8 of 9** IOGP rules and `Work Authorisation` has **0** training rows and is untrainable — never claim all 9; the 50/50 training balance against ~20-25% field prevalence, and that it reaches no dashboard denominator; the dataset is synthetic, localized from real OSHA narratives; the Trends page does not exist on purpose.
+- [ ] **Feature freeze the moment this dry run passes.** After freeze: bug fixes to the four locked screens only.
+- Exit: an unassisted end-to-end dry run succeeds on the live URLs, and every person presenting can answer the weak-number questions without improvising.
+
+## Carried-over open items (not new work — they block a clean close)
+
+These are already logged; they are listed here so the milestone cannot be called done around them.
+Each has its full detail in `DIY.md` or `AUDIT.md`.
+
+- [ ] `PATTERNS.md` and `README.md` still carry stale `INTERIM_LANE_A` prose. `PATTERNS.md` is FROZEN; both are integrator-only.
+- [ ] Decide the 10 `interim-keyword-0.1` classification rows — one holds the project's only human `overridden` decision.
+- [ ] Delete the redundant repo-root `model_weights/` (257 MB, byte-identical to the live copy) and the dead root `Dockerfile`.
+- [ ] `ruff` is installed nowhere and is in no requirements file, so the backend has no linter and `CLAUDE.md` documents a command that does not run. Add it or correct `CLAUDE.md`.
+- [ ] Train/serve skew: all three models were fitted on `raw_text` and are served `cleaned_text`. Unquantified. Needs an integrator call on which lane fixes it — or an explicit decision to ship as-is and say so.

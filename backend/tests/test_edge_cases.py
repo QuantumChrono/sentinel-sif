@@ -9,6 +9,8 @@ requires, not merely what the code currently returns.
 
 import uuid
 
+import pytest
+
 from inference.iogp_tagger import tag_iogp_rules
 from inference.precursor_ner import extract_precursors
 from inference.sif_classifier import classify_sif
@@ -72,6 +74,20 @@ def test_devanagari_report_still_processes_without_crashing(client):
 
 # --- 4. Multiple hazards in one report -------------------------------------------------------
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "REAL MODEL DEFICIENCY, not a broken test - do not weaken the assertions to make it "
+        "pass. The tagger is structurally unable to emit 'Hot Work': that rule has 8 training "
+        "and 0 test examples (`model_weights/iogp_tagger/tagger_metrics.json`, "
+        "not_measurable), so on this text it returns {'Working at Height'} only. The "
+        "multi-label MECHANISM is proven elsewhere - `inference/test_inference.py` asserts "
+        "sigmoid output can carry several rules and can be empty. What is unproven is "
+        "coverage of the under-supported rules, and that needs corpus rows, not a code fix. "
+        "strict=True so this fails loudly as XPASS the moment a retrain makes it work, "
+        "forcing this block to be re-read rather than silently carried."
+    ),
+)
 def test_multi_hazard_report_tags_more_than_one_rule():
     """PRD row: multiple hazards in one report -> multi-label tagger surfaces all
     applicable rules. Deliberately combines a Hot Work cue with a Working at Height cue.

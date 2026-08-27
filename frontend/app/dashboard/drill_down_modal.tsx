@@ -48,7 +48,10 @@ export function DrillDownModal({
         } else {
           setLoad({ name: "loaded", reports: result.data });
         }
-      } catch (error) {
+      } catch {
+        // `listReports` already maps network and HTTP failures into `result.error`, so reaching
+        // here means something unexpected threw. The value is deliberately not bound: it is not
+        // rendered, because an internal exception message is not a user-facing sentence.
         setLoad({
           name: "failed",
           error: {

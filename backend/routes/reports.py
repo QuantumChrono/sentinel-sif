@@ -24,7 +24,7 @@ from inference.precursor_ner import extract_precursors
 from inference.sif_classifier import MODEL_VERSION, classify_sif
 from preprocessing import clean_report
 from schemas import (CONFIDENCE_THRESHOLD, ClassificationOut, IogpTagOut, PrecursorOut,
-                     ProcessingFailure, ReportCreate, ReportDetail, ReportSummary, SiteOut)
+                     ProcessingFailure, ReportCreate, ReportDetail, SiteOut)
 
 router = APIRouter(prefix="/api/v1/reports", tags=["reports"])
 

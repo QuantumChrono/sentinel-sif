@@ -156,24 +156,34 @@ check("the tagger can return an empty list (sigmoid, not softmax)",
 
 # --- agreement with the labeled sample -------------------------------------------------
 # NOT A METRIC, AND WEAKER THAN IT LOOKS - READ BEFORE QUOTING THE NUMBER.
-# This was a regression floor at `agree >= 19` for the keyword implementation, which could hit 19
-# because its rules were written from the same labeling rule that produced these labels. The real
-# weights score 10/20, and the floor was lowered rather than the model excused. Two measured
-# reasons the number is nearly meaningless either way (`AUDIT.md` 2026-08-27):
+# REWRITTEN 2026-08-27 by the integrator, because the previous version of this block asserted a
+# pathology the current weights no longer have, and it was failing. It was written as a tripwire -
+# "if a retrain ever produces a model that varies its answer, this check fails and the comment
+# block above must be rewritten" - and the retrained weights tripped it exactly as designed
+# (`AUDIT.md` 2026-08-27). This is that rewrite, not a silencing of the check.
+#
+# WHAT CHANGED, measured on the live weights: the model now predicts BOTH classes on this sample
+# (10 True / 10 False against 10 labelled True) instead of answering True on all 20, and
+# agreement is 16/20, up from 10/20. So the old block's central claim - "THE MODEL IS A CONSTANT
+# PREDICTOR" - is now false and has been removed rather than left as stale prose.
+#
+# WHY 16/20 IS STILL NOT A METRIC, unchanged and still true:
 #   * CONTAMINATED: 9 of these 20 rows are inside `data/processed/train.jsonl`, so this mixes
-#     fitting rows with unseen ones. `calibration.json` holds the clean held-out numbers.
-#   * THE MODEL IS A CONSTANT PREDICTOR: it answers True on 20 of 20, so "agreement" here just
-#     measures the positive rate of whatever subset is sampled - the 9/9-vs-1/11 split between
-#     in-train and unseen rows is that, not memorization.
-# It is kept only to catch a future retrain that lands BELOW a coin flip on this fixed set.
+#     fitting rows with unseen ones. `calibration.json` holds the clean held-out numbers, and
+#     they are much worse: test accuracy 0.5918 on n=49. Quote that, never this.
+# The floor below is a regression guard only - it catches a future retrain that lands at or below
+# a coin flip on this fixed set. It is deliberately well under the measured 16 so ordinary
+# retrain variance does not fail the suite.
 if SAMPLES:
     agree = sum(classify_sif(text)[0] == row["sif_potential"] for _, text, row in SAMPLES)
     check("classifier agreement with the 20-row sample (contaminated floor, NOT a metric)",
-          agree >= 10, True)
-    # The pathology itself, pinned so it cannot go unnoticed: if a retrain ever produces a model
-    # that varies its answer, this check fails and the comment block above must be rewritten.
-    check("KNOWN DEFICIENCY, pinned: the classifier answers True on every sample row",
-          len({classify_sif(text)[0] for _, text, _ in SAMPLES}), 1)
+          agree >= 11, True)
+    # The replacement tripwire. The old one pinned a degenerate model; this one pins the property
+    # that model having been fixed - the classifier must keep discriminating. If a future retrain
+    # collapses back to answering one class on all 20 rows, this fails loudly instead of the
+    # dashboard quietly ranking every site identically.
+    check("the classifier still predicts both classes on the sample (not a constant predictor)",
+          len({classify_sif(text)[0] for _, text, _ in SAMPLES}), 2)
 
 for name, got, want in CHECKS:
     status = "ok  " if got == want else "FAIL"

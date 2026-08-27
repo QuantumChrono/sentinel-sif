@@ -14,7 +14,7 @@ from pathlib import Path
 from inference.precursor_ner import extract_precursors
 from preprocessing import clean_report
 
-SAMPLE_PATH = Path(__file__).resolve().parents[1] / "data" / "sample" / "localized.jsonl"
+SAMPLE_PATH = Path(__file__).resolve().parents[2] / "data" / "sample" / "localized.jsonl"
 
 EDGE_CASE_TEXTS = [
     "worker fell",

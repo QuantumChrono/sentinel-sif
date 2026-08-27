@@ -164,8 +164,20 @@ class SiteOut(BaseModel):
 # --- report responses ------------------------------------------------------------------
 
 class ReportSummary(BaseModel):
-    """A row of GET /api/v1/reports. Carries no precursor spans: the list view highlights
-    nothing, and shipping every span for every row would dominate the payload.
+    """NO ENDPOINT RETURNS THIS ANY MORE. Kept as the documented narrow shape, and as the
+    supertype `frontend/lib/api_client.ts` still mirrors (`ReportDetail extends ReportSummary`).
+
+    It used to be the response model of `GET /api/v1/reports`, on the rationale below. Lane B's
+    drill-down widened that endpoint to `list[ReportDetail]` so the modal could highlight
+    precursor spans without a second request per row (`DECISIONS.md` 2026-08-27). The widening is
+    backward-compatible on the wire - `ReportDetail` is a strict superset - but it does reverse
+    this rationale, so the rationale is recorded as superseded rather than deleted:
+
+      "Carries no precursor spans: the list view highlights nothing, and shipping every span for
+       every row would dominate the payload."
+
+    That cost is now real and unmeasured at `limit=200`; it is logged as tech-debt in `AUDIT.md`
+    2026-08-27 against the 2s dashboard target rather than left implicit here.
     """
 
     id: UUID

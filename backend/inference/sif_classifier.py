@@ -13,17 +13,27 @@ only how sure the model claims to be, and the threshold comparison is meaningles
 It is read from the file rather than hardcoded so a retrain cannot silently invalidate it.
 
 === READ THIS BEFORE TRUSTING A VERDICT FROM THIS FILE ==================================
-These weights are barely better than a coin flip and the numbers are in `calibration.json`
-next to them: validation accuracy 0.524 on n=42, confusion [[1,20],[0,21]] - it answers "SIF"
-on 41 of 42 validation rows. Held-out test accuracy 0.510 on n=49. The cause is corpus size,
-not a bug in this file: 235 fitting rows cannot teach DistilBERT this task.
+These weights are weak but no longer degenerate. Every number below is read from
+`calibration.json` in this directory, which the training script writes from computed values.
 
-The consequence is visible in production behaviour, so nobody should be surprised by it:
-mean confidence is ~0.52, every one of the 42 validation and 49 test rows scores below
-`CONFIDENCE_THRESHOLD = 0.65`, and therefore EVERY report routes to the Manual Review Queue
-and the auto-publish path effectively does not exist. That is the honest failure mode and it
-is the safe direction to fail in - a model this weak should not be publishing verdicts.
-`AUDIT.md` 2026-08-26 carries the threshold sweep that establishes no better cut point exists.
+  HELD-OUT TEST (n=49, the only honest number): accuracy 0.5918, precision/recall/F1 0.5833,
+  mean p(sif) 0.5723 on true-SIF rows vs 0.4598 on routine - a separation of just +0.1126.
+  VALIDATION (n=42): accuracy 0.6905, confusion [[15,6],[7,14]], separation +0.2662.
+
+Read those two lines together, because the gap between them IS the finding: test separation is
+less than half validation separation, which is overfitting on 235 fitting rows. Test accuracy
+0.5918 is a weak model - better than the coin flip it used to be, not a good classifier.
+
+WHAT THIS MEANS FOR THE REVIEW QUEUE. Confidences span 0.519-0.874 on test with a mean of
+0.7296, and 12 of 49 test rows fall below `CONFIDENCE_THRESHOLD = 0.65`. So the threshold is a
+real cut point that routes roughly a quarter of reports to a human, and the auto-publish path
+genuinely exists - it did not with the earlier epoch-1 checkpoint, whose whole test set scored
+below 0.65 and whose sweep in `AUDIT.md` 2026-08-27 therefore found no usable cut point. That
+sweep's conclusion does not describe these weights; do not quote it against them.
+
+The temperature below (T = 1.201) is fit on validation, not the identity, so these confidences
+are scaled - `ece` in `calibration.json` is 0.1446 on validation and 0.1786 on test, meaning
+the model is still measurably over-confident even after scaling.
 ========================================================================================
 """
 

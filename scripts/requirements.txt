@@ -23,3 +23,14 @@ spacy==3.8.7
 # `2.11.0+cpu`, so pinning that would DOWNGRADE the notebook to a CPU-only build and leave the
 # T4 idle while the run silently takes hours. Install torch only when running off Kaggle, and
 # match the build to the local CUDA version.
+
+# Test runner for `backend/tests/` (Lane D's suite). DEV-ONLY, and it lives here rather than in
+# `backend/requirements.txt` for the same reason as everything else in this file: that list is
+# already over Render's 512 MB ceiling and the deployed service never runs the suite.
+#
+# WHY THIS LINE EXISTS AT ALL: as merged, the Day 2 suite could not be run by either interpreter
+# on this machine - `backend/.venv` had every runtime dependency but no `pytest`, and the global
+# Python had `pytest` but no `supabase`/`postgrest`, so it failed at conftest import. The suite
+# was therefore committed unrunnable and unpinned (`AUDIT.md` 2026-08-27). Install with:
+#   backend/.venv/Scripts/python.exe -m pip install pytest==9.1.1
+pytest==9.1.1
