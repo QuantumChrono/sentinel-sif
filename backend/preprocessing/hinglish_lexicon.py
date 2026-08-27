@@ -94,7 +94,80 @@ FROM_SAMPLES = {
     "turat": "immediately", "sliped": "slipped",
 }
 
-HINGLISH = {**FROM_SAMPLES, **NEGATION, **VERBS, **NOUNS, **MODIFIERS, **AUXILIARY}
+# Added Day 2, from a census of the REAL 326-row corpus rather than the 10 Block 4 samples:
+# every word below was measured being rewritten by the spellchecker in
+# `data/processed/localized.jsonl`, with the wrong output it produced recorded next to it.
+# Occurrence counts are from that census, so the top of this list is where the damage was
+# concentrated. Same provenance rule as the rest of the file - these are words this corpus
+# actually uses.
+#
+# WHY THESE NEEDED THE LEXICON AND NOT A SMARTER GATE. `clean_report.py` now has an ambiguity
+# gate and a letter-substitution gate, and together they cut the corpus's corrupted-word count
+# from 287 to 117. They cannot catch the words below: `bohot` has 2 candidates and `boot` is a
+# clean letter-drop away, which is statistically identical to `leakge` -> `leakage`, a
+# correction that must keep working. No frequency or edit-shape heuristic separates those two.
+# Naming the word is the only mechanism that does, which is what this file is for.
+FROM_CORPUS_CENSUS = {
+    "gaye": "went",        # was -> "gave", 7 occurrences: the single most damaging one
+    "liye": "for",         # was -> "like"
+    "karte": "do",         # was -> "karate"
+    "waqt": "time",        # was -> "want"
+    "aage": "ahead",       # was -> "age"
+    "chala": "moved",      # was -> "chalk"
+    "dono": "both",        # was -> "done"
+    "mein": "in",          # was -> "mean"
+    "gira": "fell",        # was -> "girl"
+    "kare": "do",          # was -> "are"
+    "hote": "happen",      # was -> "home"
+    "phas": "stuck",       # was -> "has": a trapped-limb narrative, so losing it is expensive
+    "phans": "stuck",      # was -> "plans"
+    "nikal": "come out",   # was -> "nival"
+    "karta": "does",       # was -> "karma"
+    "khada": "standing",   # was -> "kheda"
+    "baad": "after",       # was -> "bad": turns a sequence word into a severity word
+    "karne": "to do",      # was -> "karen"
+    "khali": "empty",      # was -> "khaki"
+    "thik": "fine",        # was -> "this"
+    "chali": "moved",      # was -> "chili"
+    "haal": "condition",   # was -> "hall"
+    "kuchh": "some",       # was -> "kuch"
+    "rakho": "keep",       # was -> "rakhe"
+    "kiye": "did",         # was -> "kite"
+    "paya": "got",         # was -> "pay"
+    "bohot": "very",       # was -> "boot"
+    "kaat": "cut",         # was -> "kat"
+    "chilla": "shout",     # was -> "chill"
+    "haat": "hand",        # was -> "heat"
+    "badi": "big",         # was -> "bad": same severity-inflation problem as `baad`
+    "paas": "near",        # was -> "pass"
+    "lene": "to take",     # was -> "line"
+    "wala": "one who",     # was -> "walk": invents motion the report never described
+    "wali": "one who",     # was -> "walk"
+    "raat": "night",       # was -> "rat"
+    "ghar": "home",        # was -> "gear": invents equipment
+    "apna": "own",         # was -> "anna"
+    "madad": "help",       # was -> "madam"
+    "samay": "time",       # was -> "sammy"
+    "baat": "matter",      # was -> "beat": invents an assault
+    "paon": "foot",        # was -> "pain"
+    "paaon": "foot",       # was -> "paton"
+    "lagi": "got",         # was -> "lag"
+    "buri": "bad",         # was -> "burn": invents a burn injury
+    "pehle": "before",     # was -> "pele"
+    "wapas": "back",       # was -> "tapas"
+    "jahan": "where",      # was -> "japan"
+    "garam": "hot",        # was -> "gram": turns a temperature into a unit of mass
+    "safai": "cleaning",   # was -> "safari"
+    "chai": "tea",         # -> "chair", named in the Day 2 brief. NOT in this corpus (0
+                           # occurrences); added for real field input, where a tea break is
+                           # ordinary. Flagged so the provenance rule above stays honest.
+    "tanki": "tank",       # -> "tank" by luck, but via a 3-candidate coin flip
+    "yaar": "friend",      # was -> "year"
+    "thak": "tired",       # was -> "that"
+}
+
+HINGLISH = {**FROM_SAMPLES, **FROM_CORPUS_CENSUS, **NEGATION, **VERBS, **NOUNS,
+            **MODIFIERS, **AUXILIARY}
 
 # NEVER MAP THESE. Each is a real Hindi word whose spelling is also a common English word,
 # so mapping it would rewrite English reports. The self-check asserts the intersection with

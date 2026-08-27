@@ -387,3 +387,293 @@ Finding: `backend/.env` carried `GEMINI_API_KEY` alongside the two Supabase valu
 ### [Day 1 / Block 9] Live end-to-end smoke test on Vercel + Render passed with zero CORS errors — 2026-08-26
 Type: test-result | Severity: low
 Finding: reported by the integrator against the deployed stack (frontend on Vercel, backend on Render, database on Supabase), not run by an agent — logging it as the integrator's observation. Full path exercised end to end and **zero CORS errors** in the browser console, which is the specific failure this deploy was most exposed to: `FRONTEND_ORIGINS` is a one-origin allowlist with no wildcard, and an `Origin` mismatch of a single trailing slash presents as an opaque error that looks like the API is down. Zero errors means the production Vercel domain in `FRONTEND_ORIGINS` matches scheme + host exactly, and that `NEXT_PUBLIC_API_BASE_URL` carries no trailing slash (`api_client.ts` concatenates it with paths that already start with `/`). The unbuilt-container risk logged earlier this block is retired rather than resolved — Render runs the native Python 3 runtime, so the `Dockerfile` is not on any deploy path (`DECISIONS.md` 2026-08-26). NOT covered by this run, and still open: the deployed-latency re-measure, and the signed-in pass over both roles with empty states and a stored injection payload rendered on screen. A working end-to-end path does not demonstrate either. | Status: resolved
+
+### [Day 2 / Lane A] Work Authorisation is unreachable from this corpus: 0 narratives state a permit failure — 2026-08-26
+Type: metric | Severity: med
+Finding: measured over all 103,190 rows that survive `LABELING_RULE.md`'s exclusions. Substring counts in `Final Narrative`: `permit` 3, `authoriz` 1, `authoris` 0, `jsa` 1, `job safety` 0, `work order` 8, `procedure` 99. Explicit absence phrasings that would justify the tag — `no permit` / `without a permit` / `permit was not` / `had not obtained`, `not authoriz*` / `unauthoriz*`, `did not follow the procedure` / `failure to follow` / `procedure was not followed` — return **0 rows each**. The single `permit-required` hit (`20171110645`) describes a permit-required confined space, not an absent permit. For contrast, the other under-supplied rules are richly available: `confined space` 34, `tank` 1,587, `manhole` 211, `weld` 1,111, `torch` 331, `grinder` 709, `guard` 2,453, `interlock` 67. So the gap is specific to Work Authorisation and is a property of OSHA's source narratives, which record what happened rather than which permit was missing. Consequence: Work Authorisation cannot reach the requested 10–15 examples without fabricating them, and any model trained here should be reported as unable to detect that rule. Status: accepted (see `DECISIONS.md` same date)
+
+### [Day 2 / Lane A] BUG: `2025099811` states a permit failure its OSHA source does not — a stage-1 fabrication — 2026-08-26
+Type: bug | Severity: low
+Finding: the localized `raw_text` ends "No permit was checked for this packing job." Its `osha_narrative` reads in full: "An employee was helping to tighten down a metal packaging band for shipping. The metal band broke and struck the employee across their face, cutting their left face/eye area. The employee was hospitalized." No permit, procedure or authorisation appears in the source. `PROMPT_REWRITE` explicitly forbids this ("an invented control is worse than none"), so this is a stage-1 instruction violation, not a prompt gap. It is the **only** permit mention across all 300 rows — found while measuring the Work Authorisation ceiling, not by a targeted search. Limited blast radius, which is why severity is low rather than high: the fabricated clause was picked up as this row's `precursor_barrier_failure` span, so the span quotes its own text correctly and the row is internally consistent as an NER example, and `iogp_rules` is `["Line of Fire"]` — it does **not** over-claim Work Authorisation. `scripts/backfill_barriers.py` is fill-only and skips any row that already has a barrier, so it cannot amplify this row. Not corrected in place: rewriting one reviewed row's text is a bigger risk than the row itself. Status: open — the human decides whether to drop or regenerate `2025099811` before training
+
+### [Day 2 / Lane A] `names_a_control` has 63% recall on rows with accepted barrier spans — not usable as a filter — 2026-08-26
+Type: metric | Severity: low
+Finding: of the 46 rows in `localized.jsonl` that carry a human-accepted `precursor_barrier_failure`, `names_a_control` fires on only 29 (63%) and misses 17. Missed real spans include "While the conveyor was still running", "Auger motor started", "The bandsaw activated during the cleaning process", "The machine was unguarded", "it remained energized", "an open section of grating that was being repaired". Its firing terms on the null-barrier rows are dominated by the loose Hindi/negation markers rather than control nouns — `tha` 43, `nahi` 19, `kiya` 11, `thi` 9 against `guard` 4, `fall protection` 3, `railing` 3, `harness` 1, `loto` 1. Consequence, and the reason this was measured: using it to pre-filter which of the 254 null-barrier rows get re-extracted would have structurally discarded a third of the recoverable spans — entailment-only barriers name no control noun at all, which is precisely the canonical energy-isolation case. The backfill therefore re-extracts every null row rather than the 60 this diagnostic flags. This matches the function's own docstring ("a coverage diagnostic, not a validator"); no code change needed. Status: accepted
+
+### [Day 2 / Lane A] Targeted IOGP top-up: 26 rows appended, 300 -> 326, all three targeted rules raised — 2026-08-26
+Type: metric | Severity: low
+Finding: `--target-id` (generalised to a comma-separated list) drew 26 rows the seeded sample had missed, selected by explicit-signal regex over `Final Narrative` and balanced on label: 10 for Confined Space, 10 for Hot Work, 6 for Bypassing Safety Controls, 13 sif-true / 13 sif-false. Generation: 26/26 rows, **0 failed**, 91,826 tokens (82,548 in + 9,278 out) in 707 s, across `gpt-oss-20b` then `gpt-oss-120b` then `qwen3.8-27b` as each hit its daily wall. Per-rule counts in `localized.jsonl`, before -> after: Hot Work **3 -> 8**, Bypassing Safety Controls **8 -> 15**, Confined Space **1 -> 4**, Line of Fire 94 -> 103, Working at Height 45 -> 48, Energy Isolation 29 -> 31, Safe Mechanical Lifting 21 -> 21, Driving 19 -> 20, Work Authorisation **0 -> 0**. Yield is partial and that is the honest headline: 26 targeted draws bought 15 tags across the three targeted rules, because stage 1 can rewrite the mechanism into scenery and stage 2 only tags what the Indian text still shows — 5 of the 26 rows earned no tag at all. **No rule reached the requested 10–15**; Confined Space at 4 is still sparse and Hot Work at 8 is near the floor. Integrity of the appended rows, all verified by re-reading the file after the append: 326 rows, 326 unique ids (0 duplicates against the existing 300), 0 span-invariant violations, 0 non-canonical tags rejected, label balance 163/163. Status: resolved (rows appended; the residual sparsity is the accepted ceiling in `DECISIONS.md`)
+
+### [Day 2 / Lane A] Spot-check of the 26 new rows found 1 over-claiming row; 2 false tags stripped before append — 2026-08-26
+Type: bug | Severity: low
+Finding: every Confined Space, Work Authorisation, Hot Work and Bypassing tag on the 26 new rows was checked against both the Indian text and its OSHA source before the append. 14 of 15 held up: all 7 Bypassing tags trace to a source that says "unguarded" / "was not guarded", all 5 Hot Work tags have a real ignition source (welding, grinder, spark), and 3 of 4 Confined Space tags are genuine entries ("had entered the confined space of a separator", "cleaning the power cable inside a vessel tank", "cleaning debris within a confined space beneath the DG set enclosure"). One row over-claimed: `20161110769` — a grinder spark igniting fumes **inside** a diesel tank while the fitter worked **outside** it — returned `['Hot Work', 'Confined Space', 'Work Authorisation']`. Only Hot Work is supported: nobody entered the tank, and neither the Indian text nor the OSHA source contains any permit, authorisation or work-order language, so the model inferred that hot work on a tank requires a permit and therefore one must have been missing. Corrected to `['Hot Work']` in `data/scratch/topup.jsonl` **before** the append, so no reviewed row was edited. This is the same fabrication mode as the `2025099811` finding above, and it is why `scripts/backfill_barriers.py` leaves tag-merging off by default. Status: resolved
+
+### [Day 2 / Lane A] Barrier backfill: ~50% precision on the 9 highest-signal rows, so spans are applied by hand, not in bulk — 2026-08-26
+Type: metric | Severity: med
+Finding: `scripts/backfill_barriers.py` re-runs stage 2 only (extraction) against the stored Indian narrative, fill-only. Merge invariants asserted by `--self-check`: **13/13**. `PROMPT_EXTRACT`'s barrier section was extended from entailment-only to two explicit ways — WAY 1, the report states the absence in words ("no guard", "bina harness", "was not secured"), and WAY 2, the original entailment case — because the field asked for is precisely the stated kind. Run against the 9 null-barrier rows whose text carries explicit absence phrasing (the only 9 of 271, found by regex, and deliberately mixed with traps): the pass returned 5 barrier spans, of which **3 are correct and 3 are wrong** (one row also correctly filled a null `precursor_location`). Correct: `'No pad under the jacking point'` (20181010994); `'koi protective gear nahi tha us waqt, sirf short sleeves'` (2021021544); `'Enclosed cab window tha khula tha'` (2016098322 — a real WAY 2 entailment, the enclosed cab is the barrier and the open window is how hot radiator fluid reached the operator's face, confirmed against the OSHA source). Wrong, and rejected: `'No fall protection needed'` (2025032614 — **inverts the text's meaning**, which says protection was not needed); `'bilkul dhyan nahi tha uska'` (20181111256 — inattention, which the prompt bars as a general observation); `'pilot light on vapriser ignites the gas'` (2022076174 — the ignition source, i.e. the hazard itself, which the prompt bars explicitly). Only the 3 verified spans plus the 1 location were applied, each asserted null-before-write and round-tripped through `raw_text[start:end]`. Barrier coverage **46/300 (15.3%) -> 58/326 (17.8%)**; 268 rows remain null, which is consistent with the ceiling recorded at generation time (OSHA sources do not name failed controls). Corrects an interim number reported earlier in this session from a partially-written file: a mid-run read showed "3/3 traps correctly null", but all three were filled once the run completed — the finished precision is ~50%, not 100%. The remaining 262 null rows were NOT processed: at ~5,700 tokens/row that is ~1.5M tokens, over 7 days of free-tier quota, for a yield this measurement does not justify unattended. Status: resolved for the high-signal subset; the rest is accepted as the honest ceiling
+
+### [Day 2 / Lane A] Groq daily quota exhausted on both measured models; the backfill ran on an unmeasured one — 2026-08-26
+Type: metric | Severity: low
+Finding: during this session `gpt-oss-20b` and `gpt-oss-120b` both reached their 200,000 tokens-per-day ceiling (429 bodies quoted 196,208 and 198,380 used), and both Gemini models returned 429 "exceeded your current quota" on a single 120-token probe, so Gemini contributed nothing. The 26-row top-up spanned all three working models as each walled; the backfill therefore executed on `qwen/qwen3.8-27b`, which the prompts were never measured against (`localize_dataset.py` states this explicitly: rows produced after a rotation are worth a spot-check before they are trusted). That is a plausible contributor to the ~50% barrier precision above and is why every returned span was read against both texts before being applied. Also noted, and pre-existing: `localize_dataset.py` is now **922 lines** against the Mandate's ~200-line limit (previously logged at 766); this session's prompt edit added 14 of them. Not split here — it is one offline script whose length is almost entirely prompt text, and restructuring it mid-lane would touch the file every generation run depends on. Status: open (tech-debt, unchanged in kind from the earlier entry)
+
+### [Day 2 / Lane A] Split re-run on 326 rows: 3 of 9 IOGP rules have ZERO test examples, so per-rule F1 is not computable for them — 2026-08-26
+Type: metric | Severity: med
+Finding: `split_dataset.py` on the 326-row corpus wrote 277 train + 49 test, 326 of 326 read, self-check 16/16. Balance holds in both splits — train 139 true / 138 false (50.2%), test 24/25 (49.0%); noise tiers land within 0.7 pt of the PRD's 60/30/10 in both (train 59.9/30.0/10.1, test 59.2/30.6/10.2), and every one of the 6 strata yields test rows. Precursor coverage, train/test: activity 98.2%/95.9%, location 99.3%/98.0%, equipment 88.8%/98.0%, barrier_failure 17.7%/18.4%. **The problem is per-rule:** the split stratifies on `(sif_potential, noise_tier)` and not on IOGP rule, so the rules the top-up was run to rescue landed almost entirely in train — Hot Work **8 train / 0 test**, Confined Space **4 train / 0 test**, Work Authorisation 0/0. Safe Mechanical Lifting is nearly as bad at 19/2. Consequence: Block 6's exit criterion "per-rule F1 logged" cannot be met for 3 of the 9 rules from this test set — an F1 over zero support is undefined, not zero, and reporting it as any number would be fabricated. This is not a bug in `split_dataset.py`; its stratification choice is documented and deliberate (a tier landing wholly in one split is the failure it exists to prevent), and adding a third stratification key over multi-label tags with 4 examples cannot produce a test row for a rule that has too few rows to divide. The honest fix is more rows for those rules, which the corpus supports for Confined Space and Hot Work but not for Work Authorisation. Status: open — Lane A must either raise those rule counts before Block 6 or report those rules as unmeasurable
+
+### [Day 2 / Lane A] Precursor rule tagger built and measured on the held-out set: overlap F1 0.61 activity / 0.69 location, equipment weak at 0.23, barrier capped by the corpus — 2026-08-26
+Type: metric | Severity: med
+Finding: `scripts/build_ner_ruler.py` mines 111 patterns from the gold spans in `data/processed/train.jsonl` (vocabulary kept at count >= 2: 35 equipment heads, 21 location heads, 46 activity verbs, 4 barrier controls) and was RUN, not reasoned about — `--self-check` 14/14, ruff clean. **`SpanRuler`, not `EntityRuler`**, because 160 of 277 train rows (58%) carry at least one overlapping gold span pair — 137 of them activity containing equipment — and `doc.ents` structurally cannot hold an overlap, so an `EntityRuler` silently drops one span of every such pair and cannot represent the majority of this corpus's labelling. HELD-OUT TEST (n=49), after `resolve_overlaps` (longest-match-wins, what the frozen `precursor_ner.py` contract and the Detail highlighter require): activity overlap P 0.4935 R 0.8085 **F1 0.6129**; location overlap P 0.6271 R 0.7708 **F1 0.6916**; equipment overlap P 0.2182 R 0.2500 **F1 0.2330**; barrier_failure overlap P 1.0000 R 0.1111 **F1 0.2000**. Exact-boundary F1 is much lower on every type (activity 0.1290, location 0.1869, equipment 0.0000, barrier 0.0000) and that is reported rather than hidden: a head-noun gazetteer cannot reproduce a 6-word span's exact boundaries, and overlap F1 is the metric the Magic View actually depends on since a highlight covering "bench grinder" instead of "10-inch bench grinder" still points the reader at the right words. **Equipment at 0.23 is the honest weak spot** — 35 frequent heads cover only 147 of 246 train spans, the other 99 heads are singletons (many of them corpus typos: `grider`, `ladl`, `helmett`), and dropping the count threshold to 1 would absorb those typos as vocabulary. Span invariant `text[start:end] == entity_text`: **0 violations** over every predicted test span. BARRIER CEILING, measured: 24 of 49 gold barrier spans contain an absence word and are pattern-reachable; the other **25 are pure entailment** ("it remained energized", "while it was still operating") naming no control anywhere in the sentence, so barrier recall above ~49% is unavailable without inventing a control. No barrier pattern was added to close that gap (`DECISIONS.md`, "Barrier spans sourced by entailment only"), and the four types are deliberately left unbalanced. Status: resolved
+
+### [Day 2 / Lane A] Two real bugs in the NER ruler caught by its own self-check before it shipped, one of them a hand-written list contradicted by the data — 2026-08-26
+Type: bug | Severity: high
+Finding: (1) **The hand-written activity stop list truncated every activity span to its bare leading verb.** The first version of `build_ner_ruler.py` hand-wrote the words an activity span may not run past, and it looked entirely reasonable — it included the determiners. The data says the opposite: `a` appears **175 times INSIDE** gold activity spans against 6 times following one, and `the` **108 against 17**. `--self-check` failed on "resolve_overlaps keeps the longest" and exposed it. Fixed by mining the list instead of writing it: a word that follows gold spans more often than it appears inside them is a terminator (`at` 1 inside vs 59 after, `when` 0 vs 22, `while` 1 vs 11). The measurement also produced `jab` — Hinglish "when" — which no English stop list would have contained. A regression check now asserts `at` is in the mined list and `a` is not. (2) **The `{0,12}` quantifier emitted every nested prefix of each match**, so one gold activity span came back as 18 predictions (the full span plus every shorter prefix of itself) and 21 of 26 spans on row 0 were artifacts. Raw activity predictions were **637 against 47 gold spans**, making raw precision 0.0612 a measurement of the quantifier rather than of the patterns. Fixed in `predict` by dropping any span strictly inside a longer span **of the same type** — cross-type nesting is preserved, since that is the 137 gold pairs `SpanRuler` exists to keep, and a self-check asserts equipment nested in activity survives. After the fix raw activity is 83 predictions at P 0.4699. Both bugs were in code that would have produced plausible-looking output; the first would have shipped a tagger whose every activity highlight was one word long. Status: resolved
+
+### [Day 2 / Lane A] Both Kaggle training scripts smoke-tested end to end on CPU — executability only, NO metrics produced and none should be quoted — 2026-08-26
+Type: test-result | Severity: low
+Finding: `scripts/train_sif_classifier.py` and `scripts/train_iogp_tagger.py` were both run top to bottom on this machine (no GPU) against a 64-row subset at 1 epoch and sequence length 64, purely to prove they execute and write their artifacts before a human spends a Kaggle T4 session on them. Both **ran clean**; the classifier wrote `calibration.json` + weights + tokenizer, the tagger wrote `tagger_metrics.json` + weights + tokenizer; ruff clean on both. **The numbers those runs printed are NOT metrics and must not be copied into this log or the demo** — 64 rows and 1 epoch measures nothing, and the real train/test numbers do not exist until the T4 run happens (`DIY.md`). The run did surface three real defects, all fixed: (a) the tagger printed a hardcoded "duplicating 4 Confined Space rows" while its own table above it said 2 — the sentence now computes the rarest rule and its count from the corpus, which is the fabrication class this project's logging rules exist to catch; (b) the classifier printed a hardcoded class balance "50.2/49.8" that would have kept printing unchanged after any top-up moved the corpus, now measured, with a branch that says so plainly if the split ever leaves the 45-55% band; (c) calibration temperature came back pinned to the top of the search grid (6.000) on the undertrained smoke model, which flattens every confidence toward 0.5 and would send **the entire feed** to manual review while `CONFIDENCE_THRESHOLD = 0.65` silently stopped auto-publishing anything — the script now warns explicitly when T lands on either edge of the grid. Status: resolved (executability); the real metrics remain open pending the T4 run
+
+### [Day 2 / Lane A] Two of the three new scripts exceed the ~200-line guideline; NOT split, and the reason is a direct conflict with the deliverable — 2026-08-26
+Type: tech-debt | Severity: low
+Finding: measured code lines excluding blanks, comments and docstrings — `train_sif_classifier.py` **180** (within the mandate), `train_iogp_tagger.py` **235**, `build_ner_ruler.py` **283**. Raw totals are 280/394/489, so 19-26% of each file is the design-reasoning prose `PATTERNS.md` § 6 asks for as house style. The two over the line were deliberately NOT split, because every available split makes the deliverable worse: (1) the two training scripts must each run **top to bottom in a Kaggle notebook from a single config block**, and a shared import turns "upload and Run All" into managing multiple files and sys.path in a remote notebook; (2) the task that commissioned them explicitly forbids "a generic Trainer abstraction over the two scripts", which is the only real duplication between them; (3) the mandate itself says split along responsibility lines and never arbitrarily by length — each file has exactly one responsibility (train the classifier / train the tagger / build the ruler) and no seam that isn't arbitrary. Precedent in the same directory: `scripts/localize_dataset.py` is 921 lines. The honest reading is that the ~200-line rule is doing its real work on `backend/` modules, which are imported and composed, and not on standalone offline scripts whose whole contract is to be runnable alone. Status: accepted — reopen if either training script grows a second responsibility, which is the point at which a split stops being arbitrary
+
+Type: metric | Severity: low
+SIF classifier (distilbert-base-uncased, seed 20260826): trained on 235 rows from
+data/processed/train.jsonl with 42 held back for early stopping and temperature
+fitting; data/test/ read only after the checkpoint was chosen. Train-file class balance
+139 true / 138 false (50.2% positive) - no class
+weighting applied, the split needs none. HELD-OUT TEST (n=49):
+accuracy 0.5102, precision 0.5000,
+recall 0.9583, F1 0.6571. Confusion matrix
+TN 2 / FP 23 / FN 1 / TP 23. Calibration temperature 0.500 fit on validation:
+test ECE 0.0313, mean confidence 0.5275,
+49 of 49 test rows below CONFIDENCE_THRESHOLD 0.65
+(those route to the review queue). Validation F1 0.6774, validation ECE
+0.0216. Weights + tokenizer + calibration.json in /kaggle/working/model_weights/sif_classifier.
+
+Type: metric | Severity: med
+IOGP tagger (distilbert-base-uncased, 9-way sigmoid multi-label head, BCEWithLogitsLoss, seed 20260826):
+trained on 236 rows from data/processed/train.jsonl with 41 held back for
+early stopping and threshold selection; data/test/ read only afterwards. Tag threshold
+0.50, tuned on validation (val macro-F1 0.1681). pos_weight = n_neg/n_pos per rule
+capped at 10.0x. Per-rule on the HELD-OUT TEST (n=49):
+  Bypassing Safety Controls: train 9, test 6 - P 0.0000 R 0.0000 F1 0.0000
+  Confined Space: train 4, test 0 - not computable - zero test support
+  Driving: train 15, test 5 - P 0.0000 R 0.0000 F1 0.0000
+  Energy Isolation: train 25, test 6 - P 0.3333 R 1.0000 F1 0.5000
+  Hot Work: train 8, test 0 - not computable - zero test support
+  Line of Fire: train 85, test 18 - P 0.4783 R 0.6111 F1 0.5366
+  Safe Mechanical Lifting: train 19, test 2 - P 0.0000 R 0.0000 F1 0.0000 (LOW SUPPORT, unreliable)
+  Work Authorisation: train 0, test 0 - not computable - zero test support
+  Working at Height: train 37, test 11 - P 0.3750 R 0.5455 F1 0.4444
+MACRO-F1 0.2962, computed over the 5 rules with test support >= 3
+(['Bypassing Safety Controls', 'Driving', 'Energy Isolation', 'Line of Fire', 'Working at Height']) and NOT over all 9 - an F1 over zero support is undefined, not zero.
+micro-F1 0.4220. 7/13 no-rule test rows correctly tagged with nothing.
+Unmeasurable, zero test examples: ['Confined Space', 'Hot Work', 'Work Authorisation']. Untrainable, zero TRAIN examples: ['Work Authorisation'].
+Do not describe this model as covering all 9 rules. Weights + tokenizer + tagger_metrics.json
+in model_weights/iogp_tagger.
+
+### [Day 2 / Lane A] Block 8 weight swap: all three interim bodies deleted, real weights load behind the frozen signatures — 2026-08-27
+Type: test-result | Severity: low
+Finding: `backend/inference/` now loads real artifacts — `sif_classifier.py` a fine-tuned DistilBERT (softmax, temperature-scaled), `iogp_tagger.py` the 9-way sigmoid multi-label head, `precursor_ner.py` the spaCy SpanRuler with 111 mined patterns. Every interim keyword body is deleted outright: no dual code path, no reachable fallback, no commented-out block. `MODEL_VERSION` bumped `interim-keyword-0.1` -> `distilbert-sif-1.0`. Inference self-check **22/22** (was 21/21; two checks rewritten, one added — see the two entries below). `py_compile` clean on all six changed files. Sizes after deleting the keyword tables: `sif_classifier.py` 247 -> **90** lines, `precursor_ner.py` 220 -> **102**, `iogp_tagger.py` 158 -> **108** — all three now under the ~200-line mandate, which closes the re-measure note left in `PATTERNS.md` § 8 and `AUDIT.md` 2026-08-25. | Status: resolved
+
+### [Day 2 / Lane A] CONFIDENCE_THRESHOLD stays 0.65: the validation sweep shows no candidate above 0.55 publishes anything at all — 2026-08-27
+Type: metric | Severity: high
+Finding: swept on the VALIDATION split only (`scripts/tune_confidence_threshold.py`, re-runnable; it imports the trainer's own `stratified_val_split` at seed 20260826 so the rows are byte-identical to the ones temperature was fit on, and it never opens `data/test/`). Calibrated confidence on those 42 rows spans **0.501 – 0.567**, median 0.523. Full table, auto_accuracy = accuracy of the rows the model would publish unseen:
+
+| threshold | auto_published | reviewed | auto_accuracy | missed_sif |
+|---|---|---|---|---|
+| 0.50 | 42 | 0 | 0.5238 | 0 |
+| 0.55 | 1 | 41 | 1.0000 | 0 |
+| 0.60 | 0 | 42 | n/a | 0 |
+| **0.65** | **0** | **42** | **n/a** | **0** |
+| 0.70–0.90 | 0 | 42 | n/a | 0 |
+
+Kept at **0.65**, unchanged. The threshold is not the free variable here — the confidences are. 0.60 and above publish nothing, so they are indistinguishable from 0.65 in behaviour; 0.55's perfect auto_accuracy is one row and means nothing; 0.50 publishes everything at coin-flip accuracy. Keeping 0.65 also required no change to FROZEN `schemas.py`. Consequence, stated plainly: **every report routes to the Manual Review Queue and the auto-publish path is effectively dead.** That is the safe direction for a model this weak to fail in, but it is a real product gap, not a tuning success. | Status: open
+
+### [Day 2 / Lane A] End-to-end ingest latency with real weights: 1917 ms cold / ~1015 ms warm against the PRD's 3s target — 2026-08-27
+Type: metric | Severity: low
+Finding: measured through the real `POST /api/v1/reports` on `http://127.0.0.1:8001` (IPv4 literal, per `STAGES.md` § PORTS), local hardware, not estimated. **Cold first request 1917 ms** — includes lazily loading both DistilBERTs and the spaCy pipeline. **Warm: median 1015 ms, max 1019 ms** over 5 requests; the seed run over 20 rows independently measured median 1012 ms / max 1126 ms. **Under the 3000 ms target in both states.** Pure inference is only 66.7 ms of that (classify 29.5 ms + tag 31.1 ms + spans 2.5 ms, medians over 20 warm calls); the remaining ~950 ms is the four Supabase inserts over the network. Module import alone is 11.4 s, paid once at process start, not per request. NOT measured on the deployed Render URL — and per the entry below it cannot be, as configured. The 6 probe rows this created were deleted afterwards (verified 0 `LATENCYPROBE` rows remain). | Status: resolved
+
+### [Day 2 / Lane A] The swapped-in SIF classifier is a near-constant positive predictor, not a working classifier — 2026-08-27
+Type: metric | Severity: high
+Finding: from the weights' own `calibration.json`, produced by the training run, restated here because it governs what the demo can honestly claim. **Validation (n=42): accuracy 0.5238**, precision 0.5122, recall **1.0000**, F1 0.6774, confusion `[[1,20],[0,21]]` — it answers "SIF" on 41 of 42 rows. **Held-out test (n=49): accuracy 0.5102**, precision 0.5000, recall 0.9583, F1 0.6571, confusion `[[2,23],[1,23]]`. Mean confidence 0.525 val / 0.528 test; **42/42 and 49/49 rows below 0.65**. Calibration temperature **0.5, pinned to the low edge of the search grid** — the training script warns in writing that an edge-pinned T means the true optimum is outside the grid and the confidences are barely separable. Independently confirmed on the 20-row sample corpus: **predicts True on 20 of 20**. Cause is corpus size (235 fitting rows), not a defect in the inference body. Recall 1.0 with precision 0.51 is the signature of a model that says yes to everything: it will never miss a SIF, because it never says no. | Status: open
+
+### [Day 2 / Lane A] The 20-row "regression floor" self-check was contaminated and is not a metric — 2026-08-27
+Type: inconsistency | Severity: med
+Finding: `test_inference.py` asserted `agree >= 19` against `data/sample/localized.jsonl`. The keyword implementation could clear that because its rules were written from the same `LABELING_RULE.md` § 5 that produced those labels. Two measured problems make the number nearly meaningless for a trained model: (1) **9 of the 20 sample rows are inside `data/processed/train.jsonl`** — verified by id — so it mixes fitting rows with unseen ones; (2) the model is a constant predictor, so "agreement" only measures the positive rate of whichever subset is sampled. That fully explains the otherwise alarming 9/9 in-train vs 1/11 unseen split: it is class balance, **not** memorization. Real weights score 10/20. Floor lowered to `>= 10` with the contamination named in the file, and a second check pins the pathology itself (`len({predictions}) == 1`) so a future retrain that starts varying its answer fails loudly and forces the comment to be rewritten. `calibration.json` holds the clean held-out numbers; quote those, never this. | Status: open
+
+### [Day 2 / Lane A] The trained tagger has no same-level guard: it tags an ordinary slip as Working at Height at 0.526 — 2026-08-27
+Type: bug | Severity: med
+Finding: the interim tagger hand-wrote a `SAME_LEVEL_ONLY` list suppressing Working at Height on a same-level slip, so `tag_iogp_rules("An employee slipped on a wet floor and fell on his back.")` returned `[]`. The trained sigmoid head has no such rule and returns `[('Working at Height', 0.526)]` — barely over its 0.5 threshold. Re-adding the keyword guard was rejected: it is exactly the reachable interim fallback Block 8 forbids, and it would hide a real model deficiency behind a regex. The check was replaced with a genuine contract property the head does still satisfy — that a sigmoid head can return an empty list at all (verified: it does, on other inputs) — and the deficiency is logged here instead. The same input is also classified `(True, 0.519)`, i.e. the classifier calls an ordinary slip a SIF precursor. | Status: open
+
+### [Day 2 / Lane A] TRAIN/SERVE SKEW: all three models were trained on `raw_text` but are served `cleaned_text` — 2026-08-27
+Type: inconsistency | Severity: med
+Finding: `scripts/train_sif_classifier.py`, `train_iogp_tagger.py` and `build_ner_ruler.py` all encode `row["raw_text"]`, but `routes/reports.py:95-97` passes `cleaned_text` — the output of acronym expansion, spellcheck and Hinglish normalization — into all three functions. So every model sees a different text distribution at serve time than it was fitted on. Not fixed in this lane and deliberately so: the fix is either retraining on `cleaned_text` (Lane A, needs a training run) or changing what the route feeds (`routes/reports.py` is **Lane C's** file — reaching into it is forbidden). Effect is unquantified; on this corpus it is likely small next to the 0.51 accuracy, but it is a genuine methodological defect and is not to be discovered again later. Logged as a cross-lane item in `DIY.md`. | Status: open
+
+### [Day 2 / Lane A] The ML stack does not fit Render's free tier: 885 MB of packages plus 537 MB of weights against a 512 MB ceiling — 2026-08-27
+Type: tech-debt | Severity: high
+Finding: measured on disk in the backend venv, not estimated — torch 473.2 MB, transformers 90.7, spacy 104.2, scipy 118.2, sklearn 44.5, numpy 34.6, tokenizers 7.7, thinc 11.5 = **885.4 MB** site-packages, plus **537.4 MB** in `backend/model_weights/` (two fp32 DistilBERTs at 268 MB each). `scripts/requirements.txt` stated in writing that this stack must never enter `backend/requirements.txt` because Render's free Web Service has a **512 MB** memory ceiling. It had to enter anyway: `backend/inference/` imports torch and spacy at module load, so without them the backend cannot import its own inference module and every endpoint dies at startup. Compounding it: **`model_weights/` is `.gitignore`d** (`.gitignore:31`), so the weights cannot reach Render by push at all — the deployed service would start, then fail on the first inference call trying to read a directory that does not exist. **The deployed backend is now broken by this swap and the local one is not.** Two integrator decisions in `DIY.md`. | Status: open
+
+### [Day 2 / Lane A] Demo seed regenerated through the real pipeline: 20 rows, all `needs_review`, flat-ish density preserved — 2026-08-27
+Type: test-result | Severity: med
+Finding: the 20 interim-scored sample rows were deleted and re-seeded through the real `POST /api/v1/reports`, so every one now carries `model_version = 'distilbert-sif-1.0'`. Verified in the database: **20 real-model rows, 10 interim rows remaining** (the earlier ad-hoc test rows, which no dataset file can regenerate — left alone; one of them carries the project's only human `overridden` decision, checked before deleting anything). What landed: `sif_potential` **true 20 / false 0**, status **needs_review 20 / processed 0**, confidence range **0.509–0.551**, 17 IOGP tags over 10 rows (10 rows untagged), 81 precursor spans, language en 12 / hi-en 8. Density ranking survives with **7 distinct rank_scores across 8 sites** (Naharkatiya 0.4385 top, Hapjan 0.0615 bottom), so the priority screen still demonstrates ordering. A re-run of the script alone does NOT refresh existing rows — `already_seeded` matches on `raw_text` and skips them — so the delete was required; that is now documented in the script's docstring, along with the fact that its closing line used to hardcode the stale `interim-keyword-0.1` claim and now queries the database instead. | Status: resolved
+
+### [Day 2 / Lane A] ROOT CAUSE: the "coin-flip classifier" was an epoch-1 checkpoint kept by F1-based checkpoint selection, not a corpus-size limit - 2026-08-27
+Type: bug | Severity: high
+Finding: three earlier entries above blame the all-positive classifier on corpus size ("Cause is corpus
+size (235 fitting rows), not a defect in this file"; "235 fitting rows cannot teach DistilBERT this
+task"). **That diagnosis was wrong.** The defect was in `scripts/train_sif_classifier.py`, and
+retraining with it fixed proves the corpus was never the binding constraint. Two mechanisms combined:
+
+1. **Checkpoint selection on validation F1, compared with a strict `val_f1 > best_f1`.** A
+   constant-positive predictor on the 21/42 validation split scores F1 **0.6774 exactly**
+   (2*0.5122*1.0/1.5122) - precisely the value the old `calibration.json` recorded. The head collapsed
+   to all-positive during epoch 1, hit that 0.6774, and no later epoch could ever *beat* it, so
+   `save_pretrained` wrote the **epoch-1 weights** and every later improvement was discarded.
+   `PATIENCE = 3` then fired at epoch 4 of 12 and the run ended. F1 rewards a model that answers yes to
+   everything, which makes it the wrong quantity to select a checkpoint on here.
+2. **`LEARNING_RATE = 2e-5` was too low** to move the head off its collapsed init inside those four
+   epochs. Final train_loss was **0.7049**, and ln(2) = **0.6931** - the loss never left the value a
+   coin flip produces, i.e. the fit had learned nothing at all.
+
+The reported symptom ("early stopping triggered at Epoch 1") is not literally what happened - with
+`PATIENCE = 3`, `stale` cannot reach 3 by epoch 1 - but the conclusion drawn from it was correct: the
+weights that shipped were epoch-1 weights.
+
+FIX, and the measured result. `EPOCHS = 6` fixed with **no early stopping and no checkpoint selection**
+(linear decay reaches lr 0 on the last step, so the final epoch is the intended end of the fit),
+`LEARNING_RATE = 3e-5`, `WARMUP_FRACTION = 0.1`. Re-run to completion **on CPU locally**, 90 steps,
+seed 20260826 unchanged, same 235/42 split:
+
+| | before (epoch-1 ckpt) | after (epoch-6, lr 3e-5) |
+|---|---|---|
+| final train_loss | 0.7049 (= ln 2, no learning) | **0.2809** (under TARGET_TRAIN_LOSS 0.30) |
+| val predicted-positive rate | 41/42 = 98% | **48%** |
+| val accuracy / F1 | 0.5238 / 0.6774 | **0.6905** / 0.6829 |
+| val confusion | [[1,20],[0,21]] | **[[15,6],[7,14]]** |
+| TEST accuracy / F1 | 0.5102 / 0.6571 | **0.5918** / 0.5833 |
+| TEST confusion | [[2,23],[1,23]] | **[[15,10],[10,14]]** |
+| TEST p(sif) separation | ~0 (never measured) | **+0.1126** (0.5723 on SIF vs 0.4598 on routine) |
+| calibration temperature | 0.5, **pinned to grid edge** | **1.201**, interior to the grid |
+| TEST confidence range | 0.501-0.567 | **0.519-0.874** |
+| TEST rows below 0.65 | 49 of 49 (100%) | **12 of 49** (24%) |
+
+Per-epoch train_loss 0.7002 -> 0.6902 -> 0.6261 -> 0.4779 -> 0.3477 -> **0.2809**, so the loss was
+still falling steeply at the point the old configuration had already stopped and thrown its work away.
+The model no longer answers "SIF" to everything, and the auto-publish path is arithmetically alive again
+for the first time (76% of test rows now clear 0.65, against 0% before).
+
+Honest limits, not smoothed over: **test accuracy 0.5918 is still weak**, and test separation (+0.1126)
+is less than half validation separation (+0.2662), which is overfitting on 235 rows - real, and now the
+*actual* corpus-size effect, distinguishable from the training bug only because the bug is gone. Also
+**the wrong diagnosis is why this survived a day**: `calibration.json` recorded only T and the metrics,
+so nothing stored beside the weights said they came from epoch 1 of a 12-epoch schedule. It now also
+records `epochs`, `learning_rate`, `warmup_fraction`, `final_train_loss`, `converged` and
+`early_stopping: false`. | Status: resolved
+
+### [Day 2 / Lane A] Three computed guards added so a collapsed or unconverged fit cannot ship silently again - 2026-08-27
+Type: tech-debt | Severity: med
+Finding: the bug above was invisible in the metrics the script printed - accuracy, F1 and a confusion
+matrix are all compatible with a constant predictor, and none of them says so out loud. Three computed
+guards were added rather than a comment asking the next person to be careful:
+(1) **`val_positive_rate` printed every epoch**, so a collapse is visible while it happens (1.00 or 0.00
+means one class only); (2) **p(sif) separation reported on both splits** - mean p(sif) on true-SIF rows
+minus mean on routine rows, with a printed WARNING under 0.05, because a threshold cannot sort rows that
+all score the same and no threshold value fixes that; (3) **`TARGET_TRAIN_LOSS = 0.30` checked and
+reported**, naming ln(2) = 0.693 explicitly as the coin-flip floor. The AUDIT paste block's **Severity
+is now computed, not hardcoded** - it was pinned at `low` and printed that under an all-positive
+coin-flip model, which is how a broken run got filed as a routine metric; it now reads `high` unless the
+run both converged and separated. The temperature grid is geometric over `0.05-10.0` and spans both
+directions: the old linear grid started at 0.5 and the real run pinned to that low edge, i.e. the
+optimum was outside the grid on the sharpening side and got clipped. | Status: resolved
+
+### [Day 2 / Lane A] Preprocessing corrupted 287 distinct words in the real corpus, including every negated contraction - 2026-08-27
+Type: bug | Severity: high
+Finding: measured by censusing all 326 rows of `data/processed/localized.jsonl` through the actual
+`correct_spelling`, not sampled - **287 distinct words / 375 occurrences were being rewritten**. The
+Day 2 brief named three (`chai`->chair, `waqt`->want, `bohot`->boot); the census found two classes of
+damage that are worse, and one of them was in plain English reports rather than Hinglish ones:
+
+**1. NEGATED CONTRACTIONS WERE BEING DESTROYED.** `WORD = [a-zA-Z]+` treated the apostrophe as a
+boundary, so `didn't` tokenized as `didn` + `t`; `didn` is 4 characters, cleared
+`MIN_SPELLCHECK_LENGTH`, and was "corrected" to `did`. The pipeline turned **"the operator didn't lock
+out the valve" into "did't lock out"** - deleting the negation. Same for `wasn't`->`was't` and
+`couldn't`->`could't`. `hinglish_lexicon.py` calls negation "the highest-value group... what turn a
+narrative clause into a barrier-failure signal", and this silently removed it from English text. Not in
+the brief; found by testing the tokenizer instead of the reported symptoms. Fixed by making the
+apostrophe part of the token - the dictionary already knows `didn't`, `wasn't` and `worker's`.
+
+**2. The corruption was whole-word edit-distance-1 correction, NOT the substring replacement the brief
+described.** Two computed gates now sit in front of it, both measured before being adopted:
+- **Ambiguity gate** (`MAX_SPELLCHECK_CANDIDATES = 4`): more than 4 edit-distance-1 neighbours means the
+  pick is a frequency coin flip. `chai` has 14 candidates, `waqt` 8; every genuine typo worth fixing has
+  few (equipmnt 1, leakge 1, hosptal 1, pressre 3, valv 4).
+- **Letter-substitution gate**: a typo drops or transposes letters the writer meant (`equipmnt`,
+  `wtaer`, `clearnig`), while a Hindi word needs a letter *exchanged* to reach an English one
+  (`gaye`->gave, `mein`->mean, `dono`->done, `baad`->bad). Same length with a different letter multiset
+  is exactly that exchange. Measured: spares **21 of 34** sampled Hinglish words, costs **2 of 34**
+  genuine typos (`maintenence`, `laddar` now pass through unchanged) - a deliberate trade, since an
+  unfixed typo still tokenizes into subwords near the right word while a confident wrong substitution
+  hands the classifier a different word entirely.
+
+**NEGATIVE RESULT, stated because it shaped the design: no statistical gate can fix `bohot`.** It has 2
+candidates and `boot` is a clean letter-drop away - arithmetically indistinguishable from
+`leakge`->`leakage`, which must keep working. Neither frequency ratio (bohot 271:1 vs pressre 1041:1)
+nor edit shape separates them. Naming the word in the lexicon is the only mechanism that does, so 55
+census-measured words were added to `hinglish_lexicon.py` as `FROM_CORPUS_CENSUS`, each annotated with
+the wrong output it used to produce. Several were changing the incident's meaning, not just its wording:
+`baad`(after)->"bad" and `badi`(big)->"bad" inflate severity, `buri`(bad)->"burn" invents a burn injury,
+`baat`(matter)->"beat" invents an assault, `garam`(hot)->"gram" turns a temperature into a mass,
+`ghar`(home)->"gear" invents equipment, `phas`(stuck)->"has" flattens a trapped-limb narrative.
+
+RESULT: **287 -> 110 distinct words rewritten (375 -> 115 occurrences), a 69% reduction**, and the
+remainder is dominated by the stage working correctly (`impcat`->impact, `wtaer`->water,
+`clearnig`->clearing, `hosptal`->hospital, `colapsed`->collapsed). Preprocessing self-check **45/45**.
+Two regressions I introduced and then caught in the same census, logged because the self-check saw
+neither: `khalasi's`->`khalasis` (5 occurrences - making apostrophes part of the token created a
+possessive the dictionary does not hold; fixed by checking the `'s`-stripped stem, which covers every
+protected noun's possessive without listing them twice), and `jwala`->`wala` (2 occurrences - adding
+`wala` to the lexicon gave the proper name a one-edit neighbour it previously lacked; `jwala` is now
+protected). About 10 Hinglish words still slip through (`iske`, `uthao`, `dekh`, `rehna`, `unke`...), 1
+occurrence each. | Status: resolved
+
+### [Day 2 / Lane A] Acronym dictionary expanded 45 -> 94 applied, 11 -> 21 unverified - 2026-08-27
+Type: metric | Severity: low
+Finding: `oil_acronyms.py` grew by 49 applied entries across the three existing groups - HSE/permit
+(`sif`, `lti`, `trir`, `moc`, `tbt`, `jha`, `hazid`, `simops`, `iogp`, `lsr`, `flra`, `tra`, `cse`,
+`wah`, `frc`, `mpi`, `dpt`), pressure and well-control (`psv`, `prv`, `esdv`, `mawp`, `whp`, `thp`,
+`chp`, `sithp`, `sicp`, `ibop`, `mgs`, `octg`, `lcm`, `ecd`, `dls`, `tvd`, `wbm`, `obm`, `rkb`, `hpht`,
+`pcp`), and Indian upstream (`ongc`, `oisd`, `dgms`, `lpg`, `cng`, `lng`, `ctf`). `sif` matters most: a
+report reading "potential SIF" should reach the classifier as the words it was fine-tuned on, not as an
+opaque token DistilBERT splits into wordpieces.
+
+Every key was checked against all three collision rules the file already documents before being added -
+plain-English dictionary, `HINGLISH` keys, and `COLLIDES_WITH_ENGLISH`. **All three intersections are
+empty**, asserted by the self-check. 10 candidates were REFUSED on those grounds and recorded in
+`UNVERIFIED` rather than dropped: `sop`, `peso`, `ut`, `rt`, `mw`, `tds`, `gl`, `pob`, `nmr`, `swp` - the
+first four because an English word or unit shares the spelling, which is exactly the collision that
+corrupts ordinary reports.
+
+Stated plainly so the provenance rule in that file stays honest: **none of these 49 acronyms appears in
+the 326-row corpus** (0 occurrences each, measured). The corpus is localized OSHA narratives and carries
+almost no Indian upstream shorthand, so these are for real field input at demo time and are **not** a
+measured win on current data. `chai` is flagged the same way in the lexicon - 0 corpus occurrences,
+added because a tea break is ordinary in real field text. | Status: resolved
+
+### [Day 2 / Lane A] The retrained weights break the pinned-pathology self-check, exactly as that check was designed to do - 2026-08-27
+Type: test-result | Severity: low
+Finding: measured the retrained checkpoint (repo-root `model_weights/sif_classifier/`, NOT yet live)
+against the same 20-row sample corpus the inference self-check uses. **Agreement 17/20, up from 10/20,
+with 2 distinct predictions instead of 1** (9 predicted True against 10 labelled True; the old weights
+predicted True on all 20). So `test_inference.py`'s deliberate tripwire - `len({predictions}) == 1`,
+added on 2026-08-27 "so a future retrain that starts varying its answer fails loudly and forces the
+comment to be rewritten" - **will fail the moment the weights are swapped.** That is the check working,
+not a regression. It is recorded here so whoever runs the swap knows the failure is expected and knows
+which comment it is demanding be rewritten.
+
+Both self-checks currently pass (preprocessing 45/45, inference 22/22) because the live weights are
+still the broken epoch-1 ones. Lane A did not pre-emptively edit the check to match weights that are not
+live, since that would leave the repo asserting something untrue of the model it actually loads. The
+20-row floor itself stays contaminated and stays not-a-metric: 9 of those 20 rows are inside
+`data/processed/train.jsonl`, so 17/20 is not a held-out number. The held-out number is test accuracy
+**0.5918** in `calibration.json`. | Status: open

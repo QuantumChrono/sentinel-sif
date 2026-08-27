@@ -26,6 +26,7 @@ cannot be normalized by a Roman-script lexicon at all, so it returns the origina
 """
 
 import re
+from collections import Counter
 
 from spellchecker import SpellChecker
 
@@ -41,8 +42,23 @@ CONFIDENCE_FLOOR = 0.5
 # so a 3-letter typo correction is close to a coin flip and can invent a different word.
 MIN_SPELLCHECK_LENGTH = 4
 
+# A word with more than this many edit-distance-1 neighbours is left alone. The correction is a
+# popularity contest between near-ties at that point, and pyspellchecker settles it on corpus
+# frequency, which knows nothing about oilfields or Hindi. Measured on the real 326-row corpus:
+# `chai` has 14 candidates and became "chair", `waqt` has 8 and became "want". Every genuine
+# typo worth fixing has few: equipmnt 1, leakge 1, hosptal 1, pressre 3, valv 4.
+MAX_SPELLCHECK_CANDIDATES = 4
+
 DEVANAGARI = re.compile(r"[ऀ-ॿ]")
-WORD = re.compile(r"[a-zA-Z]+")
+
+# Apostrophes are part of the word, NOT a boundary. `[a-zA-Z]+` split "didn't" into `didn` + `t`,
+# and `didn` is 4 characters so it cleared the length gate and got "corrected" to `did` - so the
+# pipeline turned "the operator didn't lock out the valve" into "did't lock out", deleting the
+# negation. `hinglish_lexicon.py` calls negation the highest-value group in the corpus precisely
+# because it is what turns a narrative into a barrier-failure signal, and this quietly destroyed
+# it in plain English reports. The dictionary already knows "didn't", "wasn't" and "worker's", so
+# keeping the token whole is the entire fix.
+WORD = re.compile(r"[a-zA-Z]+(?:'[a-zA-Z]+)*")
 
 # One shared instance: loading the frequency list costs ~100ms and the inference path is
 # synchronous. Never mutated after construction, so it is safe to share across requests.
@@ -70,14 +86,50 @@ def expand_acronyms(text):
     return text
 
 
+def _is_letter_substitution(word, correction):
+    """True when the correction swaps letters rather than adding, dropping or moving them.
+
+    THE MEASURED SEPARATOR between a typo worth fixing and a foreign word worth sparing. A
+    typist who means "equipment" drops or transposes letters - `equipmnt`, `wtaer`, `hosptal`,
+    `clearnig` - so the correction restores a letter or reorders one. A Hindi word that merely
+    lands near an English one needs a letter *exchanged* to get there: `gaye`->`gave`,
+    `mein`->`mean`, `liye`->`like`, `dono`->`done`, `baad`->`bad`, `thik`->`this`.
+
+    Same length with a different multiset of letters is exactly that exchange. Measured over the
+    real 326-row corpus: this gate spares 21 of 34 sampled Hinglish words and costs 2 of 34
+    genuine typos (`maintenence`, `laddar`, which now pass through unchanged). That trade is
+    deliberate - an unfixed typo still tokenizes into subwords close to the right word, while a
+    confident wrong substitution hands the classifier a different word entirely.
+    """
+    return len(word) == len(correction) and Counter(word) != Counter(correction)
+
+
 def correct_spelling(text):
-    """Stage 2. Fix obvious typos, leaving protected vocabulary and short words alone."""
+    """Stage 2. Fix obvious typos, leaving protected vocabulary and short words alone.
+
+    Four gates, cheapest first. Anything that trips one is returned untouched, because the
+    failure mode being defended against is not a missed typo - it is a confidently rewritten
+    word, which silently changes what the classifier and the NER downstream read.
+    """
     def fix(match):
         word = match.group(0)
-        if len(word) < MIN_SPELLCHECK_LENGTH or word.lower() in _SPELL:
+        lowered = word.lower()
+        # A possessive is protected by its stem. Making apostrophes part of the token (above)
+        # turned `khalasi's` into one word that the dictionary does not hold, even though
+        # `khalasi` is in DOMAIN_WORDS - so the most-rewritten word in the whole corpus became
+        # `khalasi's` -> `khalasis`, 5 occurrences. Checking the stem covers every protected
+        # noun's possessive without listing them twice.
+        stem = lowered[:-2] if lowered.endswith("'s") else lowered
+        if len(stem) < MIN_SPELLCHECK_LENGTH or stem in _SPELL:
             return word
-        correction = _SPELL.correction(word.lower())
-        if not correction or correction == word.lower():
+        # Ambiguity gate: too many near-neighbours means the "correction" is a frequency
+        # coin flip. Checked before `correction()` because both walk the same candidate set.
+        if len(_SPELL.candidates(lowered) or ()) > MAX_SPELLCHECK_CANDIDATES:
+            return word
+        correction = _SPELL.correction(lowered)
+        if not correction or correction == lowered:
+            return word
+        if _is_letter_substitution(lowered, correction):
             return word
         # Preserve the shape the writer used; the models downstream are uncased but the
         # cleaned text is also shown to a human in the Report Detail view.
