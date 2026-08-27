@@ -42,7 +42,6 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 load_dotenv("backend/.env")
 sys.path.insert(0, "backend")
 from database import supabase  # noqa: E402
-from inference.iogp_tagger import tag_iogp_rules  # noqa: E402
 from inference.sif_classifier import classify_sif  # noqa: E402
 from preprocessing import clean_report  # noqa: E402
 from schemas import CONFIDENCE_THRESHOLD  # noqa: E402
