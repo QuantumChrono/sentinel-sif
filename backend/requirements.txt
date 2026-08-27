@@ -4,3 +4,30 @@ python-dotenv==1.2.3
 pydantic==2.13.4
 supabase==2.31.0
 pyspellchecker==0.9.0  # Block 4 preprocessing spellcheck stage
+
+# --- Block 8 weight swap: the runtime now loads real models ------------------------------
+# These are here because `backend/inference/` imports them at module load. Before the swap the
+# three bodies were keyword matchers and the backend carried no ML stack at all.
+#
+# READ THIS BEFORE DEPLOYING - IT WILL NOT FIT ON RENDER'S FREE TIER AS CONFIGURED.
+# Measured on this machine, not estimated: torch 473 MB + transformers 91 MB + spacy 104 MB +
+# scipy/sklearn/numpy 197 MB = 885 MB of site-packages, plus 537 MB of weights in
+# `backend/model_weights/` (two fp32 DistilBERTs). Render's free Web Service has a 512 MB
+# memory ceiling (`STAGES.md` § DEPLOYED), and `scripts/requirements.txt` warned in writing that
+# this stack must never land here for exactly that reason.
+# It landed anyway because the alternative is a backend that cannot import its own inference
+# module. Both consequences are logged for the integrator in `DIY.md` (Day 2, blocking): the
+# memory ceiling, and that `model_weights/` is `.gitignore`d so the weights cannot reach Render
+# by push at all. Do not treat this file as evidence the deploy works - it is not deployed.
+#
+# torch is the CPU build, pinned to the wheel actually installed and verified here. The `+cpu`
+# local version needs PyTorch's own index; without it pip resolves a CUDA build that is several
+# GB and pointless on a CPU-only host:
+#   pip install --index-url https://download.pytorch.org/whl/cpu torch==2.11.0
+torch==2.11.0
+transformers==5.0.0
+spacy==3.8.16          # the precursor SpanRuler pipeline in model_weights/precursor_ner/
+# scikit-learn is deliberately NOT here. `scripts/tune_confidence_threshold.py` needs it, but that
+# script is offline and `scripts/requirements.txt` already pins it. Adding it here would put
+# sklearn + scipy (163 MB measured) into a deploy that is already over its memory ceiling, to
+# support code the runtime never imports.
