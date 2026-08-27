@@ -68,7 +68,7 @@ def activity_bucket(activity_text: str) -> str:
 
 
 def rank_groups(counts: dict[str, dict]) -> list[dict]:
-    """Turn {group_name: {"total": int, "sif": int, "region": str | None}} into ranked rows.
+    """Turn {group_name: {"total": int, "sif": int, "region": str | None, "site_id": str | None}} into ranked rows.
 
     Sorted by `rank_score` descending, then by `total_reports` descending, then by name - the
     two tiebreakers make the order deterministic, so the table does not reshuffle between
@@ -77,6 +77,9 @@ def rank_groups(counts: dict[str, dict]) -> list[dict]:
     An empty input returns an empty list. That is the ordinary state of this system today: the
     dataset is still generating, and a dashboard that throws on zero rows cannot be built
     against (`PRD.md` § Edge cases, network-lag fallback).
+    
+    For sites, `site_id` is passed through to enable drill-down filtering. For activities,
+    site_id is not present in the tally dict.
     """
     rows = []
     for group_name, tally in counts.items():
@@ -84,6 +87,7 @@ def rank_groups(counts: dict[str, dict]) -> list[dict]:
         sif = tally["sif"]
         rows.append({
             "group_name": group_name,
+            "site_id": tally.get("site_id"),
             "region": tally.get("region"),
             "total_reports": total,
             "sif_reports": sif,

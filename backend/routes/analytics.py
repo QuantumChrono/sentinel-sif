@@ -36,7 +36,7 @@ def get_density() -> DensityResponse:
     would silently deflate a site's rate in proportion to how often its submissions crashed.
     """
     rows = supabase.table("reports").select(
-        "id, sites(name, region), classifications!inner(sif_potential), "
+        "id, site_id, sites(name, region), classifications!inner(sif_potential), "
         "precursors(entity_type, entity_text)"
     ).execute().data or []
 
@@ -51,7 +51,8 @@ def get_density() -> DensityResponse:
 
         site = row.get("sites")
         if site:
-            tally = by_site.setdefault(site["name"], {"total": 0, "sif": 0, "region": site["region"]})
+            site_id = row.get("site_id")
+            tally = by_site.setdefault(site["name"], {"total": 0, "sif": 0, "region": site["region"], "site_id": site_id})
             tally["total"] += 1
             tally["sif"] += is_sif
 
@@ -69,8 +70,32 @@ def get_density() -> DensityResponse:
             tally["sif"] += is_sif
 
     return DensityResponse(
-        by_site=[DensityRow(group_type="site", **row) for row in rank_groups(by_site)],
-        by_activity=[DensityRow(group_type="activity", **row) for row in rank_groups(by_activity)],
+        by_site=[
+            DensityRow(
+                group_type="site",
+                group_id=row.get("site_id"),
+                group_name=row["group_name"],
+                region=row["region"],
+                total_reports=row["total_reports"],
+                sif_reports=row["sif_reports"],
+                sif_rate=row["sif_rate"],
+                rank_score=row["rank_score"],
+            )
+            for row in rank_groups(by_site)
+        ],
+        by_activity=[
+            DensityRow(
+                group_type="activity",
+                group_id=None,
+                group_name=row["group_name"],
+                region=row["region"],
+                total_reports=row["total_reports"],
+                sif_reports=row["sif_reports"],
+                sif_rate=row["sif_rate"],
+                rank_score=row["rank_score"],
+            )
+            for row in rank_groups(by_activity)
+        ],
     )
 
 

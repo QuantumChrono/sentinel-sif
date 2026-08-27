@@ -133,7 +133,15 @@ NOISE_INSTRUCTIONS = {
     ),
 }
 
-BATCH_SIZE = 5  # narratives per request, in both stages. Index-matched by Python.
+BATCH_SIZE = 1  # narratives per request, in both stages. Index-matched by Python.
+# 1, not 5: Groq's free tier caps 8,000 tokens/min, and a 5-row request overran that in a
+# single call, so every batch spent its whole retry budget inside an already-closed window.
+# A 1-row request is NOT small - measured from Groq's own 429 bodies on 2026-08-26 it is
+# 3,251-5,467 tokens, because the prompt template (rules, noise tier, schema) dwarfs the
+# narrative. Two stages per row is therefore ~7,000-11,000 tokens: still over 8,000/min for
+# one model, which is why finishing a run depends on fleet rotation, not on batch size alone.
+# The batch machinery (index-matched results, whole-batch retry) is left intact: it costs
+# nothing at n=1 and raising this back is a one-line change if a paid tier lifts the cap.
 
 # The model fleet, tried in order and rotated when one is exhausted. Every free tier here caps
 # tokens-per-minute *and* tokens-per-day, so no single model can finish a 1,200-row run
@@ -276,12 +284,21 @@ sentence, and never quote from another report:
   - equipment: the equipment, tool, vehicle or material involved
   - barrier_failure: the safety control that was missing, bypassed, defeated or inadequate
 
-THE BARRIER FAILURE IS THE HARDEST FIELD. RETURN IT ONLY ON ENTAILMENT.
-Return a span here ONLY where the mechanics this report itself states ENTAIL that a specific
+THE BARRIER FAILURE IS THE HARDEST FIELD. A SPAN IS EARNED ONE OF EXACTLY TWO WAYS.
+WAY 1 - THE REPORT SAYS IT. The report's own words state that a control was missing, absent,
+bypassed, defeated, removed or not applied. Quote that clause. This is reading, not inferring,
+so it needs no further justification: "no guard", "the machine was unguarded", "bina harness",
+"without a permit", "no pad under the jacking point", "lockout miss hua", "was not secured",
+"the interlock had been removed" are all correct answers when the report actually contains
+them. Look for absence stated in Hindi as readily as in English - "bina", "nahi", "nahi kiya"
+attached to a control is the same statement.
+WAY 2 - THE MECHANICS ENTAIL IT. The mechanics this report states ENTAIL that a specific
 control was absent or defeated - where, given what the report says happened, that control
 cannot have been in place. The canonical case: a motor, pump or machine that starts, moves or
 energises while someone is working inside it or on it entails that energy isolation was not
-applied, and the clause reporting that start-up is the span. Otherwise return null.
+applied, and the clause reporting that start-up is the span.
+If neither way applies, return null. Way 1 does not loosen anything below: a control you had to
+supply yourself is still a fabrication, and the words must be in the report you were given.
   Never infer a barrier from the OUTCOME. That someone was injured, how badly, and what kind
   of accident it was are not entailment: a fall does not by itself mean fall protection was
   missing, a machine injury does not by itself mean isolation was skipped, a burn does not by
@@ -593,7 +610,7 @@ def call_llm_batch(fleet, prompt, count, required_field=None):
                 model=model, temperature=1.0,
                 response_format={"type": "json_object"},
                 # gpt-oss-120b is a reasoning model: a measured trivial call spent 91 of its
-                # 144 completion tokens on hidden reasoning. Five reports plus that overhead
+                # 144 completion tokens on hidden reasoning. A batch plus that overhead
                 # overran the endpoint's default ceiling and truncated the JSON mid-document,
                 # which arrives as a 400 json_validate_failed or a short results array. The
                 # ceiling is raised rather than reasoning_effort lowered, because the
@@ -613,6 +630,14 @@ def call_llm_batch(fleet, prompt, count, required_field=None):
                 if required_field and not str(result.get(required_field) or "").strip():
                     raise ValueError(f"result {offset + 1} has no {required_field}")
             usage = response.usage
+            if model in GROQ_MODELS:
+                # Pace, don't burst: back-to-back calls stack inside one 8,000/min window and
+                # 429 within a couple of rows. 4s takes the edge off that burst, but it does NOT
+                # keep a single model under the cap - at a measured ~5,000 tokens per call, one
+                # model sustains only ~1.6 calls/min, so staying under by pacing alone would
+                # need ~37s here. Fleet rotation, not this sleep, is what lets a run progress;
+                # this only reduces how often rotation is triggered. Raise it if 429s dominate.
+                time.sleep(4)
             return results, usage.prompt_tokens, usage.completion_tokens
         except Exception as error:  # exhausted model / transient 5xx / bad batch - retry
             # A per-day quota is not transient: no backoff inside this run can clear it, and
@@ -804,8 +829,10 @@ def main():
                                        "rotating through all of them. For reproducing a "
                                        "single model's output; a pinned run stops at that "
                                        "model's daily quota")
-    parser.add_argument("--target-id", help="generate this OSHA ID only, bypassing the "
-                                            "seeded sample draw. For re-testing one row")
+    parser.add_argument("--target-id", help="generate these OSHA IDs only (one, or several "
+                                            "comma-separated), bypassing the seeded sample "
+                                            "draw. For re-testing one row, and for a targeted "
+                                            "top-up of a rule the seeded draw under-supplied")
     parser.add_argument("--workers", type=int, default=1,
                         help="concurrent batches. Default 1: the free tier allows 8,000 "
                              "tokens/min and one batch costs ~4,000, so parallel batches "
@@ -836,9 +863,11 @@ def main():
           f"({positives / len(frame):.1%}) | false {len(frame) - positives:,}")
 
     if args.target_id:
-        sample = frame[frame["ID"] == args.target_id]
-        if sample.empty:
-            raise SystemExit(f"{args.target_id} is not in the labeled frame")
+        wanted = [i.strip() for i in args.target_id.split(",") if i.strip()]
+        sample = frame[frame["ID"].isin(wanted)]
+        missing = set(wanted) - set(sample["ID"])
+        if missing:
+            raise SystemExit(f"not in the labeled frame: {', '.join(sorted(missing))}")
         count = len(sample)
     else:
         sample = pick_sample(frame, count, args.seed)
