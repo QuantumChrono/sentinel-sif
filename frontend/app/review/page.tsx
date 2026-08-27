@@ -12,8 +12,7 @@
  *
  * A DECIDED ROW IS DROPPED FROM LOCAL STATE RATHER THAN REFETCHED. The endpoint would no longer
  * return it, so dropping it locally and refetching agree - and dropping it means the queue does not
- * flash or reorder the remaining rows under the officer's cursor mid-review. `verifiedGone` records
- * that the API confirmed the write, so the row leaves only after the server said so.
+ * flash or reorder the remaining rows under the officer's cursor mid-review.
  *
  * CONFIRM KEEPS THE MODEL'S VERDICT; OVERRIDE INVERTS IT. Both send `sif_potential` explicitly,
  * because `ReviewDecision` requires it on both paths - a confirmation that does not restate what it
@@ -21,6 +20,13 @@
  *
  * PER-ROW ACTION STATE, NOT ONE SHARED FLAG. A single `busy` boolean would disable every row's
  * buttons while one row saved, and a single `error` would attach one row's failure to all of them.
+ *
+ * FILTERING IS CLIENT-SIDE, DELIBERATELY. `GET /api/v1/analytics/review-queue` (owned by Lane B's
+ * `backend/routes/analytics.py`) and `getReviewQueue()` in the frozen `api_client.ts` only take a
+ * `limit` param today. Rather than touch a file this lane does not own, site/date/confidence
+ * filtering narrows the rows already fetched. If the queue ever grows large enough that this is
+ * too slow, that's a cross-lane request in `DIY.md` asking for server-side query params - not a
+ * reason to edit `api_client.ts` directly.
  */
 
 import { useEffect, useState } from "react";
@@ -47,11 +53,35 @@ export default function ReviewQueuePage() {
    * indistinguishable from a queue that was empty on arrival. */
   const [decided, setDecided] = useState(0);
 
+  /** Filter state. Client-side only — see module docstring. */
+  const [siteFilter, setSiteFilter] = useState("all");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [confidenceBand, setConfidenceBand] = useState<"all" | "low" | "mid">("all");
+
   useEffect(() => {
     getReviewQueue().then((result) =>
       setLoad(result.ok ? { name: "loaded", rows: result.data } : { name: "failed", error: result.error }),
     );
   }, []);
+
+  // Derived on every render from whatever is currently loaded — never computed inside `decide`,
+  // so the filter options and filtered list always reflect the latest state, not a stale snapshot
+  // taken the last time someone clicked a button.
+  const siteOptions = load.name === "loaded"
+    ? Array.from(new Set(load.rows.map((r) => r.site_name ?? "No site recorded"))).sort()
+    : [];
+
+  const filteredRows = load.name === "loaded"
+    ? load.rows.filter((row) => {
+        if (siteFilter !== "all" && (row.site_name ?? "No site recorded") !== siteFilter) return false;
+        if (dateFrom && row.submitted_at.slice(0, 10) < dateFrom) return false;
+        if (dateTo && row.submitted_at.slice(0, 10) > dateTo) return false;
+        if (confidenceBand === "low" && row.confidence >= 0.30) return false;
+        if (confidenceBand === "mid" && row.confidence < 0.30) return false;
+        return true;
+      })
+    : [];
 
   async function decide(row: ReviewQueueRow, reviewStatus: "confirmed" | "overridden") {
     setSaving((current) => new Set(current).add(row.id));
@@ -125,7 +155,8 @@ export default function ReviewQueuePage() {
         </p>
       </div>
 
-      {/* `aria-live` so a decision is announced, not only painted. */}
+      {/* `aria-live` so a decision is announced, not only painted. Counts the whole queue, not the
+          filtered view — filters narrow what's shown, they don't change what's actually pending. */}
       <p aria-live="polite" className="text-sm text-slate-600">
         {load.rows.length === 0
           ? decided > 0
@@ -143,15 +174,68 @@ export default function ReviewQueuePage() {
         </p>
       )}
 
+      {load.rows.length > 0 && (
+        <div className="flex flex-wrap items-end gap-4 rounded border border-slate-200 bg-white p-4">
+          <div>
+            <label htmlFor="site-filter" className="block text-sm font-medium">Site</label>
+            <select
+              id="site-filter"
+              value={siteFilter}
+              onChange={(e) => setSiteFilter(e.target.value)}
+              className="mt-1 rounded border border-slate-300 px-3 py-1.5"
+            >
+              <option value="all">All sites</option>
+              {siteOptions.map((name) => <option key={name} value={name}>{name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label htmlFor="date-from" className="block text-sm font-medium">From</label>
+            <input
+              id="date-from"
+              type="date"
+              value={dateFrom}
+              onChange={(e) => setDateFrom(e.target.value)}
+              className="mt-1 rounded border border-slate-300 px-3 py-1.5"
+            />
+          </div>
+          <div>
+            <label htmlFor="date-to" className="block text-sm font-medium">To</label>
+            <input
+              id="date-to"
+              type="date"
+              value={dateTo}
+              onChange={(e) => setDateTo(e.target.value)}
+              className="mt-1 rounded border border-slate-300 px-3 py-1.5"
+            />
+          </div>
+          <div>
+            <label htmlFor="confidence-filter" className="block text-sm font-medium">Confidence</label>
+            <select
+              id="confidence-filter"
+              value={confidenceBand}
+              onChange={(e) => setConfidenceBand(e.target.value as typeof confidenceBand)}
+              className="mt-1 rounded border border-slate-300 px-3 py-1.5"
+            >
+              <option value="all">All</option>
+              <option value="low">Under 30%</option>
+              <option value="mid">30%–65%</option>
+            </select>
+          </div>
+        </div>
+      )}
+
+      {/* Distinguishes "the queue is genuinely empty" (handled above) from "filters hide
+          everything currently in it" — otherwise a full queue with an over-narrow filter looks
+          identical to an empty one, which reads as a bug during the demo. */}
+      {load.rows.length > 0 && filteredRows.length === 0 && (
+        <p role="status" className="rounded border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
+          No reports match these filters.
+        </p>
+      )}
+
       <ul className="space-y-4">
-        {load.rows.map((row) => (
-          <QueueRow
-            key={row.id}
-            row={row}
-            busy={saving.has(row.id)}
-            error={errors[row.id]}
-            onDecide={decide}
-          />
+        {filteredRows.map((row) => (
+          <QueueRow key={row.id} row={row} busy={saving.has(row.id)} error={errors[row.id]} onDecide={decide} />
         ))}
       </ul>
     </div>
