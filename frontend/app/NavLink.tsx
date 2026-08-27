@@ -2,8 +2,14 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import type { ComponentProps, ReactNode } from "react";
 
-export default function NavLink({ href, children }) {
+type NavLinkProps = {
+  href: ComponentProps<typeof Link>["href"];
+  children: ReactNode;
+};
+
+export default function NavLink({ href, children }: NavLinkProps) {
   const pathname = usePathname();
   const active = pathname === href;
 
