@@ -34,7 +34,28 @@ SAFETY = {
     "scba": "self contained breathing apparatus",
     "lel": "lower explosive limit",
     "h2s": "hydrogen sulphide",
+    "co2": "carbon dioxide",
     "ert": "emergency response team",
+    # Added Day 2. The project's own vocabulary and the standard HSE terms around it. `sif`
+    # matters most: a report that says "potential SIF" should read as the words the classifier
+    # was fine-tuned on, not as an opaque token DistilBERT splits into wordpieces.
+    "sif": "serious injury or fatality",
+    "lti": "lost time injury",
+    "trir": "total recordable incident rate",
+    "moc": "management of change",
+    "tbt": "toolbox talk",
+    "jha": "job hazard analysis",
+    "hazid": "hazard identification",
+    "simops": "simultaneous operations",
+    "iogp": "international association of oil and gas producers",
+    "lsr": "life saving rule",
+    "flra": "field level risk assessment",
+    "tra": "task risk assessment",
+    "cse": "confined space entry",
+    "wah": "work at height",
+    "frc": "fire retardant clothing",
+    "mpi": "magnetic particle inspection",
+    "dpt": "dye penetrant test",
 }
 
 # Standard drilling and well-operations vocabulary.
@@ -55,8 +76,31 @@ DRILLING = {
     # "wo" deliberately NOT mapped to workover: it is Hindi for "that" and collides.
     "srp": "sucker rod pump",
     "esp": "electrical submersible pump",
+    "pcp": "progressive cavity pump",
     "dg": "diesel generator",
     "dg set": "diesel generator set",
+    # Added Day 2. Pressure vocabulary first: these are the terms a barrier-failure narrative
+    # actually turns on, so leaving them as bare tokens loses the part that carries the hazard.
+    "psv": "pressure safety valve",
+    "prv": "pressure relief valve",
+    "esdv": "emergency shutdown valve",
+    "mawp": "maximum allowable working pressure",
+    "whp": "wellhead pressure",
+    "thp": "tubing head pressure",
+    "chp": "casing head pressure",
+    "sithp": "shut in tubing head pressure",
+    "sicp": "shut in casing pressure",
+    "ibop": "internal blowout preventer",
+    "mgs": "mud gas separator",
+    "octg": "oil country tubular goods",
+    "lcm": "lost circulation material",
+    "ecd": "equivalent circulating density",
+    "dls": "dogleg severity",
+    "tvd": "true vertical depth",
+    "wbm": "water based mud",
+    "obm": "oil based mud",
+    "rkb": "rotary kelly bushing",
+    "hpht": "high pressure high temperature",
 }
 
 # Indian upstream (OIL / ONGC) surface-facility vocabulary.
@@ -65,6 +109,15 @@ INDIAN_UPSTREAM = {
     "ocs": "oil collecting station",
     "eps": "early production system",
     "cts": "central tank station",
+    "ctf": "central tank farm",
+    # Added Day 2. Operators and the two statutory bodies whose names appear in Indian
+    # upstream incident paperwork.
+    "ongc": "oil and natural gas corporation",
+    "oisd": "oil industry safety directorate",
+    "dgms": "directorate general of mines safety",
+    "lpg": "liquefied petroleum gas",
+    "cng": "compressed natural gas",
+    "lng": "liquefied natural gas",
 }
 
 # Plain field-note shorthand. Not acronyms, but the same substitution and the same reason.
@@ -110,6 +163,11 @@ DOMAIN_WORDS = {
     "raju", "ravi", "mohan", "arun", "deepak", "sanjeev", "vinod", "ashok",
     "rakesh", "dinesh", "manoj", "pradeep", "sanjay", "ajay", "bikash", "dipak",
     "jitendra", "narayan", "gopal", "bharat", "kishore", "prakash", "hemant",
+    # `jwala` is here for a measured reason, not for completeness: adding "wala" to the Hinglish
+    # lexicon made it a known word, which gave the name `jwala` a one-edit neighbour it did not
+    # have before, and the corpus census caught it being rewritten to "wala" twice. Protecting a
+    # name is cheap; a fix that quietly renames a worker is not.
+    "jwala",
 }
 
 ACRONYMS = {**SAFETY, **DRILLING, **INDIAN_UPSTREAM, **FIELD_SHORTHAND}
@@ -131,6 +189,23 @@ UNVERIFIED = {
     "ht": "high tension (electrical)? height?",
     "cp": "cathodic protection? control panel?",
     "pm": "preventive maintenance? afternoon?",
+    # Added Day 2 alongside the expansion above. Each was considered for the applied lists and
+    # deliberately refused - the first four because a common English word or unit shares the
+    # spelling, which is the collision that corrupts ordinary reports, and the rest because two
+    # readings are equally live in this exact context.
+    "sop": "standard operating procedure - but 'sop' is an ordinary English word, so mapping it "
+           "would rewrite plain text",
+    "peso": "Petroleum and Explosives Safety Organisation (India) - collides with the currency, "
+            "which an English dictionary holds",
+    "mw": "mud weight? megawatt? - both are live on a site with a diesel generator",
+    "tds": "top drive system? total dissolved solids? - both appear in oilfield text",
+    "ut": "ultrasonic testing - but 'ut' collides with English and is only two characters",
+    "rt": "radiographic testing? running tool? - two characters, too many readings",
+    "gl": "ground level? gas lift? - both ordinary onshore",
+    "pob": "personnel on board - standard offshore; the onshore reading is a camp head count "
+           "and this project is onshore, so the same objection applies as to 'oim'",
+    "nmr": "near miss report? nuclear magnetic resonance? - the logging tool reading is real",
+    "swp": "safe work permit? safe working practice? - overlaps 'ptw', which IS mapped",
 }
 
 # Longest first, so "dg set" is matched before "dg" and never becomes "diesel generator set"

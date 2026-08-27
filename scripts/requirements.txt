@@ -1,6 +1,25 @@
-# Offline dataset generation only (scripts/localize_dataset.py). Deliberately separate from
-# backend/requirements.txt: nothing under backend/ imports this script, and the deployed
-# backend must not carry pandas or an LLM client. Versions are the ones actually verified.
+# Offline scripts only. Deliberately separate from backend/requirements.txt: nothing under
+# backend/ imports these, and the deployed backend must not carry pandas, an LLM client, or
+# torch. Versions are the ones actually verified, never a guess.
+#
+# NOTHING HERE BELONGS IN backend/requirements.txt. Render's free tier has a 512 MB memory
+# ceiling (`DIY.md`), and torch + transformers alone exceed what that leaves for the app. The
+# Block 8 weight swap loads saved weights; it does not need this training stack.
+
+# Dataset generation (localize_dataset.py, backfill_barriers.py, split_dataset.py)
 pandas==2.2.3
 openai==2.20.0
 python-dotenv==1.2.1
+
+# Model training (train_sif_classifier.py, train_iogp_tagger.py) and the precursor ruler
+# (build_ner_ruler.py). The training scripts are written for a Kaggle T4 notebook, where all
+# three of these are already installed - you only need this list to run them anywhere else.
+transformers==4.57.1
+scikit-learn==1.7.2
+spacy==3.8.7
+
+# torch is deliberately NOT pinned here, and pinning it would be the expensive kind of mistake.
+# A Kaggle GPU image ships a CUDA-matched torch already; the version verified on this machine is
+# `2.11.0+cpu`, so pinning that would DOWNGRADE the notebook to a CPU-only build and leave the
+# T4 idle while the run silently takes hours. Install torch only when running off Kaggle, and
+# match the build to the local CUDA version.

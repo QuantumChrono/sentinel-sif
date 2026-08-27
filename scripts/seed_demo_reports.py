@@ -3,14 +3,26 @@
 `PRD.md` § Edge cases: "keep ~50 pre-seeded already-processed reports so Dashboard/Density views
 show something real even if live inference stalls."
 
-=== OWNED TECH DEBT: THESE ROWS GO STALE THE MOMENT REAL WEIGHTS LAND ===================
-Every row this script writes is classified, tagged and span-extracted by the INTERIM_LANE_A
-keyword implementations in `backend/inference/`, and carries `model_version =
-'interim-keyword-0.1'`. They are NOT real model output. When Block 8 swaps in the fine-tuned
-weights, every one of these rows is stale and disagrees with what the same text would score
-afterwards - so LANE A MUST RE-RUN THIS SCRIPT AFTER THE SWAP. Logged in `AUDIT.md`
-(2026-08-26, tech-debt) rather than left as a comment only. Find the stale rows with:
-  select count(*) from classifications where model_version = 'interim-keyword-0.1';
+=== THE ROWS THIS SCRIPT WRITES NOW CARRY REAL MODEL OUTPUT ==============================
+The Block 8 weight swap is done (2026-08-27): `backend/inference/` loads the fine-tuned
+DistilBERT heads and the spaCy SpanRuler, so rows written from here carry
+`model_version = 'distilbert-sif-1.0'` and are genuine inference output, not keyword scores.
+
+Rows written BEFORE the swap carry `'interim-keyword-0.1'` and are stale - they disagree with
+what the same text scores now. Find them, and confirm none survive a reseed, with:
+  select model_version, count(*) from classifications group by model_version;
+
+RE-RUNNING THIS SCRIPT DOES NOT REFRESH AN EXISTING ROW. `already_seeded` skips any narrative
+whose `raw_text` is already in `reports`, so a plain re-run over the same input seeds NOTHING
+and leaves stale rows exactly as they were. Replacing them means deleting those report rows
+first (the three child tables cascade) - a destructive database operation that needs the
+integrator's go-ahead, which is why this script does not do it for you.
+
+WHAT THE REAL MODEL DOES TO THIS SEED, MEASURED (`AUDIT.md` 2026-08-27): the classifier is a
+near-constant positive predictor with confidence ~0.52, so every seeded row lands
+`sif_potential = true`, below `CONFIDENCE_THRESHOLD`, status `needs_review`. Expect a flat
+density ranking and a review queue holding every row. That is the honest picture of a
+277-row-corpus model, and it is the reason the interim rows had to go: they looked better.
 =========================================================================================
 
 HOW THE ROWS ARE PROCESSED. Each one is submitted to the real `POST /api/v1/reports` over HTTP,
@@ -203,8 +215,16 @@ def main():
 
     report_shape(seeded)
     print_density(args.base_url)
-    print("\nEvery row above carries model_version 'interim-keyword-0.1' and is STALE once real "
-          "weights land - Lane A re-runs this script after Block 8.")
+    # Read back rather than asserted: this line used to hardcode 'interim-keyword-0.1' and kept
+    # printing it after the Block 8 swap had made it false. The database is the authority on what
+    # was actually written, so it is queried.
+    versions = {}
+    for row in supabase.table("classifications").select("model_version").execute().data or []:
+        versions[row["model_version"]] = versions.get(row["model_version"], 0) + 1
+    print("\nmodel_version across ALL classifications now in the database:")
+    for version, count in sorted(versions.items()):
+        stale = "  <- STALE, pre-Block-8 keyword scores" if version.startswith("interim") else ""
+        print(f"  {version:26} {count}{stale}")
 
 
 if __name__ == "__main__":

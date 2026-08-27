@@ -1,156 +1,106 @@
 """IOGP Life-Saving Rule tagging. One public function, `tag_iogp_rules`.
 
 THE SIGNATURE IS FROZEN (`STAGES.md` § FROZEN files):
-`tag_iogp_rules(text) -> list[(rule_name, confidence)]`. Only the body changes in Block 8.
+`tag_iogp_rules(text) -> list[(rule_name, confidence)]`.
 
 MULTI-LABEL, NOT MULTI-CLASS. `PRD.md` § ML pipeline detail specifies a 9-way **sigmoid** head:
-zero, one, or several rules per report, each with an independent confidence. So the scores
-below deliberately do NOT sum to 1, and returning an empty list is a correct answer - an
-ordinary same-level trip maps to no rule at all. Anything that normalizes these numbers across
-rules has turned the sigmoid head back into a softmax one and broken the contract.
+zero, one, or several rules per report, each with an independent confidence. So the scores below
+deliberately do NOT sum to 1, and returning an empty list is a correct answer - an ordinary
+same-level trip maps to no rule at all. Anything that normalizes these numbers across rules has
+turned the sigmoid head back into a softmax one and broken the contract.
 
-Rule names are emitted verbatim from `schemas.IOGP_RULE_NAMES`, the canonical 9 in `PRD.md`
-§ Glossary, which says do not rename or merge them. Nothing here can invent a tenth rule: the
-scores are keyed by those constants, so a typo is an import error rather than a bad row.
+Rule names come from the checkpoint's own `id2label`, and the loader asserts that set is exactly
+`schemas.IOGP_RULE_NAMES` - the canonical 9 in `PRD.md` § Glossary. So a checkpoint trained on a
+renamed or reordered label set fails loudly at load instead of writing a tenth rule name into
+`iogp_tags.rule_name`.
+
+=== WHAT THESE WEIGHTS CAN AND CANNOT DO, FROM `tagger_metrics.json` =====================
+Validation macro-F1 0.168. Held-out test micro-F1 0.422, macro-F1 0.296 over only the five
+rules with enough test support to score. Per-rule, on the held-out set:
+
+  Energy Isolation      P 0.33  R 1.00  F1 0.50   - fires on nearly everything
+  Line of Fire          P 0.48  R 0.61  F1 0.54   - the largest class, 85 train rows
+  Working at Height     P 0.38  R 0.55  F1 0.44
+  Bypassing Safety Controls  F1 0.00  - 6 test rows, none found
+  Driving               F1 0.00  - 5 test rows, none found
+  Safe Mechanical Lifting    F1 0.00  - 2 test rows, low support
+  Confined Space / Hot Work  not computable - ZERO test rows
+  Work Authorisation    UNTRAINABLE - zero train rows too, so the head has never seen a
+                        positive example and cannot emit this rule meaningfully at all
+                        (`AUDIT.md` 2026-08-26: no narrative in this corpus states a permit
+                        failure).
+
+Read that as: two rules are weakly usable, one over-fires, three score zero, and three cannot
+be measured. It is a 277-row corpus. The numbers are logged rather than smoothed because a
+demo that claims nine working rules has claimed six it does not have.
+========================================================================================
 """
+
+import json
+from functools import lru_cache
+from pathlib import Path
+
+import torch
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 from schemas import IOGP_RULE_NAMES
 
-MODEL_VERSION = "interim-keyword-0.1"
+WEIGHTS_DIR = Path(__file__).resolve().parent.parent / "model_weights" / "iogp_tagger"
 
-# A rule is emitted at or above this score. Independent per rule, as a sigmoid head is.
-TAG_THRESHOLD = 0.5
+MODEL_VERSION = "distilbert-iogp-1.0"
 
-# INTERIM_LANE_A - everything below is interim scaffolding. Delete the bodies, keep the
-# signature. Owner: Lane A, Day 2 (DECISIONS.md, "Interim inference implementations behind
-# frozen signatures").
-#
-# PROVENANCE. The cue phrases per rule are the prose form of the rule definitions in
-# `scripts/localize_dataset.py` (the STAGE 2 prompt) - the same definitions the dataset's
-# `iogp_rules` labels were generated against. Using a different notion of "Line of Fire" here
-# than the labels were made with would put the interim tagger and the training data in
-# disagreement, which is the failure this shared provenance exists to prevent.
-#
-# STRONG vs WEAK. A strong cue names the governed mechanism directly ("welding" is Hot Work).
-# A weak cue is consistent with the rule but not sufficient alone ("cylinder" suggests lifting
-# only if something is being moved). Two weak cues clear the threshold; one does not.
-STRONG_WEIGHT = 0.55
-WEAK_WEIGHT = 0.3
-SCORE_CEILING = 0.9
+_METRICS = json.loads((WEIGHTS_DIR / "tagger_metrics.json").read_text(encoding="utf-8"))
 
-# Ordered as `IOGP_RULE_NAMES`. Each entry: (strong cues, weak cues).
-RULE_CUES = {
-    "Bypassing Safety Controls": (
-        ("bypass", "overrode", "overridden", "override the", "guard was removed",
-         "guard removed", "without the guard", "guard missing", "interlock", "defeated",
-         "disabled the alarm", "alarm was off", "tied down the trip", "jumper"),
-        ("guard", "alarm", "trip", "sensor", "safety device", "protective device"),
-    ),
-    "Confined Space": (
-        ("confined space", "cellar pit", "inside the tank", "inside the vessel",
-         "entered the tank", "entered the vessel", "manhole", "sump", "into the pit",
-         "gas test", "atmosphere test", "oxygen deficien"),
-        ("tank", "vessel", "pit", "sump", "cellar", "ventilation", "fumes", "oxygen"),
-    ),
-    "Driving": (
-        ("driving", "drove", "was driving", "collision", "collided", "overturned", "rollover",
-         "jack knifed", "jackknifed", "ran off the road", "reversing", "reversed into",
-         "from the moving", "fell from the vehicle", "run over by the"),
-        ("vehicle", "truck", "tractor", "atv", "jeep", "bus", "trailer", "road", "driver"),
-    ),
-    "Energy Isolation": (
-        ("lockout", "lock out", "tagout", "tag out", "lockout tagout", "not isolated",
-         "without isolating", "isolation was not", "started while", "started up while",
-         "energised", "energized", "live wire", "electric shock", "electrocut",
-         "residual pressure", "stored pressure", "still under pressure", "short circuit"),
-        ("maintenance", "cleaning", "repair", "servicing", "adjustment", "isolation",
-         "breaker", "switchgear", "electrical", "pressure"),
-    ),
-    "Hot Work": (
-        ("welding", "welded", "cutting torch", "gas cutting", "grinding", "grinder",
-         "flame", "spark", "sparks", "hot work", "ignition source", "blowtorch", "brazing"),
-        ("ignited", "fire", "burn", "burns", "smoke", "flammable", "torch"),
-    ),
-    "Line of Fire": (
-        # "fell on" / "fell onto" are deliberately absent, and the reason is worth keeping: a
-        # bare "fell on" matches "slipped and fell on his back", which is a same-level slip and
-        # the labeling rule's canonical negative. Line of Fire needs something falling ONTO a
-        # person, so only the person-directed forms are matched. The same phrase caused the same
-        # false positive in `sif_classifier.py`; both lists carry the fix.
-        ("struck by", "hit by", "fell on him", "fell on her", "fell on them",
-         "fell on the worker", "fell onto him", "fell onto her", "fell onto them",
-         "line of fire", "falling object",
-         "dropped object", "swinging", "shifting load", "load shifted", "pinch point",
-         "pinned", "pinched between", "crushed between", "trapped under", "caught in",
-         "entangled", "rolled onto", "spray", "jet", "discharged", "released onto"),
-        ("path of", "underneath", "beneath the", "in front of", "nearby", "rotating",
-         "moving", "falling"),
-    ),
-    "Safe Mechanical Lifting": (
-        ("crane", "hoist", "hoisting", "sling", "slung", "rigging", "lifting the",
-         "was lifted", "being lifted", "suspended load", "winch", "chain block",
-         "forklift", "shackle", "stacked", "stacking"),
-        ("load", "lift", "trolley", "cart", "unload", "unloading", "loaded", "cylinder",
-         "drum", "pipe rack", "stack"),
-    ),
-    "Work Authorisation": (
-        ("permit to work", "without a permit", "without permit", "no permit", "permit was not",
-         "without authorisation", "without authorization", "not authorised", "not authorized",
-         "without a job safety analysis", "no job safety analysis", "procedure was not",
-         "without following the procedure", "toolbox talk was not"),
-        ("permit", "authorisation", "authorization", "procedure", "job safety analysis",
-         "clearance", "supervisor was not informed"),
-    ),
-    "Working at Height": (
-        ("fall from height", "fell from height", "fall to lower level", "fell from the",
-         "fell off the", "at height", "working at height", "scaffold", "monkeyboard",
-         "monkey board", "derrick", "harness", "lanyard", "fall arrest", "edge protection",
-         "from the platform", "from the ladder", "from the stair", "from the mast"),
-        ("ladder", "stair", "stairs", "platform", "elevated", "above ground", "roof",
-         "climbing", "descending"),
-    ),
-}
-
-# The dataset's own negative case: an ordinary slip or trip on a walking surface maps to NO
-# rule (the STAGE 2 prompt says so explicitly, and 8 of the 20 sample rows have an empty list).
-# Without this, "fell" plus "platform" would tag Working at Height on a same-level trip.
-SAME_LEVEL_ONLY = (
-    "same level", "slipped on", "slipped and fell", "tripped over", "tripped on",
-    "lost his footing", "lost her footing", "lost their footing", "stumbled", "uneven surface",
-)
-HEIGHT_OVERRIDES_SAME_LEVEL = (
-    "fall to lower level", "fell from the", "fell off the", "from the scaffold",
-    "from the ladder", "from the stair", "from the platform", "at height", "into the pit",
-    "into the cellar",
-)
+# A rule is emitted at or above this sigmoid score. Independent per rule, as a sigmoid head is.
+# Tuned on the validation split by `scripts/train_iogp_tagger.py` and read from its metrics file
+# rather than hardcoded, so a retrain that moves it cannot leave a stale copy here.
+TAG_THRESHOLD = float(_METRICS["threshold"])
+MAX_LENGTH = int(_METRICS["max_length"])
 
 
-def _score(lowered: str, strong: tuple[str, ...], weak: tuple[str, ...]) -> float:
-    """Independent score for one rule. Not normalized against the other eight."""
-    hits = sum(STRONG_WEIGHT for cue in strong if cue in lowered)
-    hits += sum(WEAK_WEIGHT for cue in weak if cue in lowered)
-    return min(SCORE_CEILING, hits)
+@lru_cache(maxsize=1)
+def _tokenizer_and_model():
+    """Load once, on first call, and keep it. Same lazy-load reasoning as `sif_classifier`.
+
+    The label-set assertion lives here rather than at module import so that a bad checkpoint
+    fails on the first inference call with a readable message, instead of breaking `uvicorn`
+    startup for every endpoint including the ones that never touch a model.
+    """
+    tokenizer = AutoTokenizer.from_pretrained(WEIGHTS_DIR)
+    model = AutoModelForSequenceClassification.from_pretrained(WEIGHTS_DIR)
+    model.eval()  # disables dropout; without it two identical calls can disagree
+
+    labels = set(model.config.label2id)
+    if labels != set(IOGP_RULE_NAMES):
+        raise ValueError(
+            f"checkpoint labels do not match schemas.IOGP_RULE_NAMES. "
+            f"unexpected {sorted(labels - set(IOGP_RULE_NAMES))}, "
+            f"missing {sorted(set(IOGP_RULE_NAMES) - labels)}")
+    return tokenizer, model
 
 
 def tag_iogp_rules(text: str) -> list[tuple[str, float]]:
     """Return [(rule_name, confidence)] for every applicable rule. Empty list is valid.
 
     FROZEN SIGNATURE. Confidences are independent per rule and do not sum to 1.
+
+    Empty input returns no rules without a forward pass - there is nothing to tag, and an
+    empty list is already a correct answer for text that breaks no rule.
     """
-    # INTERIM_LANE_A - keyword scorer. Replace this body with the sigmoid multi-label head.
-    lowered = text.lower()
+    if not text or not text.strip():
+        return []
 
-    same_level = (any(cue in lowered for cue in SAME_LEVEL_ONLY)
-                  and not any(cue in lowered for cue in HEIGHT_OVERRIDES_SAME_LEVEL))
+    tokenizer, model = _tokenizer_and_model()
+    batch = tokenizer(text, truncation=True, max_length=MAX_LENGTH, return_tensors="pt")
+    with torch.no_grad():
+        logits = model(**batch).logits[0]
 
-    tagged = []
-    for rule_name in IOGP_RULE_NAMES:
-        if same_level and rule_name == "Working at Height":
-            continue
-        strong, weak = RULE_CUES[rule_name]
-        score = _score(lowered, strong, weak)
-        if score >= TAG_THRESHOLD:
-            tagged.append((rule_name, round(score, 3)))
+    # Sigmoid, never softmax: nine independent yes/no decisions. `BCEWithLogitsLoss` fused the
+    # sigmoid into training, so it is applied here at prediction time and nowhere else.
+    scores = torch.sigmoid(logits)
+
+    tagged = [(model.config.id2label[index], round(float(score), 3))
+              for index, score in enumerate(scores) if score >= TAG_THRESHOLD]
 
     # Highest confidence first: the Detail view renders these as chips left to right, and the
     # most probable rule is the one an HSE officer should read first.
