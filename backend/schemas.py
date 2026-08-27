@@ -222,10 +222,14 @@ class DensityRow(BaseModel):
     `rank_score` is the Wilson lower bound the ordering actually uses, so a 1-of-1 group cannot
     outrank 24-of-40. Both are returned because the table must show the honest fraction while
     sorting on the defensible number. See `analytics/density.py` for the arithmetic.
+    
+    `group_id` (for sites) enables drill-down by filtering reports to that site. For activities,
+    group_id is null since activity filtering happens by entity_text matching.
     """
 
     group_type: Literal["site", "activity"]
     group_name: str
+    group_id: UUID | None
     region: str | None
     total_reports: int
     sif_reports: int

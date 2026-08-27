@@ -20,11 +20,15 @@
  * SORTING IS PURELY LOCAL AND NEVER REFETCHES. It reorders the rows already on screen. Clicking
  * `Ranking score` returns to the backend's own ordering, so a reader can always get back to the
  * defensible view after exploring.
+ *
+ * DRILL-DOWN: Clicking any row opens a modal showing the reports behind that site's/activity's
+ * score. The group_id (UUID for sites, null for activities) enables filtering by the API.
  */
 
 import { useState } from "react";
 
 import type { DensityRow } from "@/lib/api_client";
+import { DrillDownModal } from "./drill_down_modal";
 
 /** The sortable columns. Keys are `DensityRow` field names, so a header cannot name a column that
  * does not exist in the payload. `region` is absent for activities, which have no region. */
@@ -98,6 +102,7 @@ export function DensityTable({
   emptyMessage: string;
 }) {
   const [sort, setSort] = useState<Sort>({ key: "rank_score", direction: "desc" });
+  const [selectedRow, setSelectedRow] = useState<DensityRow | null>(null);
 
   // A copy: mutating the prop array would reorder the caller's state in place.
   const sorted = [...rows].sort((a, b) => {
@@ -119,53 +124,75 @@ export function DensityTable({
   }
 
   return (
-    <div className="overflow-x-auto rounded border border-slate-200 bg-white">
-      <table className="w-full min-w-[40rem] border-collapse text-sm">
-        <caption className="sr-only">
-          {groupLabel} ranking by SIF-precursor density, sorted by {sort.key.replace(/_/g, " ")}
-          {sort.direction === "asc" ? ", ascending" : ", descending"}
-        </caption>
-        <thead className="bg-slate-50 text-slate-700">
-          <tr>
-            <SortableHeader column="group_name" label={groupLabel} sort={sort} onSort={toggle} />
-            {showRegion && <SortableHeader column="region" label="Region" sort={sort} onSort={toggle} />}
-            <SortableHeader
-              column="sif_rate"
-              label="SIF density"
-              hint="SIF-potential reports as a share of this group's total reports"
-              sort={sort}
-              onSort={toggle}
-            />
-            <SortableHeader column="sif_reports" label="SIF reports" sort={sort} onSort={toggle} />
-            <SortableHeader column="total_reports" label="Total reports" sort={sort} onSort={toggle} />
-            <SortableHeader
-              column="rank_score"
-              label="Ranking score"
-              hint="Wilson 95% lower bound - the ordering the backend applies, so a 1-of-1 group cannot outrank 24-of-40"
-              sort={sort}
-              onSort={toggle}
-            />
-          </tr>
-        </thead>
-        <tbody>
-          {sorted.map((row) => (
-            <tr key={`${row.group_type}:${row.group_name}`} className="border-b border-slate-100 last:border-0">
-              <th scope="row" className="px-3 py-2 text-left font-medium">{row.group_name}</th>
-              {showRegion && <td className="px-3 py-2 text-slate-600">{row.region ?? "—"}</td>}
-              <td className="px-3 py-2 tabular-nums">
-                <span className="font-semibold">{(row.sif_rate * 100).toFixed(1)}%</span>
-                {/* The fraction the percentage came from, so the number is checkable in place. */}
-                <span className="ml-2 text-xs text-slate-500">
-                  {row.sif_reports} of {row.total_reports}
-                </span>
-              </td>
-              <td className="px-3 py-2 tabular-nums text-slate-700">{row.sif_reports}</td>
-              <td className="px-3 py-2 tabular-nums text-slate-700">{row.total_reports}</td>
-              <td className="px-3 py-2 tabular-nums text-slate-700">{row.rank_score.toFixed(4)}</td>
+    <>
+      <div className="overflow-x-auto rounded border border-slate-200 bg-white">
+        <table className="w-full min-w-[40rem] border-collapse text-sm">
+          <caption className="sr-only">
+            {groupLabel} ranking by SIF-precursor density, sorted by {sort.key.replace(/_/g, " ")}
+            {sort.direction === "asc" ? ", ascending" : ", descending"}
+          </caption>
+          <thead className="bg-slate-50 text-slate-700">
+            <tr>
+              <SortableHeader column="group_name" label={groupLabel} sort={sort} onSort={toggle} />
+              {showRegion && <SortableHeader column="region" label="Region" sort={sort} onSort={toggle} />}
+              <SortableHeader
+                column="sif_rate"
+                label="SIF density"
+                hint="SIF-potential reports as a share of this group's total reports"
+                sort={sort}
+                onSort={toggle}
+              />
+              <SortableHeader column="sif_reports" label="SIF reports" sort={sort} onSort={toggle} />
+              <SortableHeader column="total_reports" label="Total reports" sort={sort} onSort={toggle} />
+              <SortableHeader
+                column="rank_score"
+                label="Ranking score"
+                hint="Wilson 95% lower bound - the ordering the backend applies, so a 1-of-1 group cannot outrank 24-of-40"
+                sort={sort}
+                onSort={toggle}
+              />
             </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+          </thead>
+          <tbody>
+            {sorted.map((row) => (
+              <tr
+                key={`${row.group_type}:${row.group_name}`}
+                className="border-b border-slate-100 last:border-0 cursor-pointer hover:bg-slate-50 transition-colors"
+                onClick={() => setSelectedRow(row)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    setSelectedRow(row);
+                  }
+                }}
+              >
+                <th scope="row" className="px-3 py-2 text-left font-medium">{row.group_name}</th>
+                {showRegion && <td className="px-3 py-2 text-slate-600">{row.region ?? "—"}</td>}
+                <td className="px-3 py-2 tabular-nums">
+                  <span className="font-semibold">{(row.sif_rate * 100).toFixed(1)}%</span>
+                  {/* The fraction the percentage came from, so the number is checkable in place. */}
+                  <span className="ml-2 text-xs text-slate-500">
+                    {row.sif_reports} of {row.total_reports}
+                  </span>
+                </td>
+                <td className="px-3 py-2 tabular-nums text-slate-700">{row.sif_reports}</td>
+                <td className="px-3 py-2 tabular-nums text-slate-700">{row.total_reports}</td>
+                <td className="px-3 py-2 tabular-nums text-slate-700">{row.rank_score.toFixed(4)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {selectedRow && (
+        <DrillDownModal
+          groupType={selectedRow.group_type}
+          groupName={selectedRow.group_name}
+          groupId={selectedRow.group_id ?? null}
+          onClose={() => setSelectedRow(null)}
+        />
+      )}
+    </>
   );
 }

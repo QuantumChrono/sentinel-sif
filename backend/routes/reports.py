@@ -145,31 +145,47 @@ def _insert_report(row: dict) -> dict:
         raise
 
 
-@router.get("", response_model=list[ReportSummary])
+@router.get("", response_model=list[ReportDetail])
 def list_reports(
     site_id: UUID | None = None,
+    activity: str | None = None,
     sif_potential: bool | None = None,
     iogp_rule: str | None = None,
     review_status: str | None = None,
     submitted_from: datetime | None = None,
     submitted_to: datetime | None = None,
     limit: int = Query(default=50, ge=1, le=200),
-) -> list[ReportSummary]:
+) -> list[ReportDetail]:
     """List and filter reports, newest first. The filters are `PRD.md` § Backend API's set.
+
+    Returns full `ReportDetail` (including precursor spans and cleaned text) so the drill-down
+    modal can show highlighted entities and precursor details, not just a summary.
 
     `sif_potential`, `iogp_rule` and `review_status` live on child tables, so they filter with
     `!inner` - which turns the embed into an inner join and drops reports whose child rows do
     not match, instead of returning the report with an empty child list.
+    
+    `activity` filters by the first word (verb) of activity precursor spans, matching the
+    bucketing in `analytics/density.py`. This enables drill-down from the "By Activity" ranking.
     """
     select = REPORT_SELECT
     if sif_potential is not None or review_status:
         select = select.replace("classifications(", "classifications!inner(")
     if iogp_rule:
         select = select.replace("iogp_tags(", "iogp_tags!inner(")
+    if activity:
+        select = select.replace("precursors(", "precursors!inner(")
 
     query = supabase.table("reports").select(select)
     if site_id:
         query = query.eq("site_id", str(site_id))
+    if activity:
+        # Activity filter: match the first word (verb) of activity spans using ilike for case-insensitive
+        # This must match the bucketing in analytics/density.py activity_bucket()
+        query = query.eq("precursors.entity_type", "activity")
+        # Supabase filter on text starts with: we need entity_text that starts with the activity verb
+        # Use a simple approach: filter where entity_text starts with the activity (case-insensitive)
+        query = query.ilike("precursors.entity_text", f"{activity}%")
     if sif_potential is not None:
         query = query.eq("classifications.sif_potential", sif_potential)
     if review_status:
@@ -182,20 +198,7 @@ def list_reports(
         query = query.lte("submitted_at", submitted_to.isoformat())
 
     rows = query.order("submitted_at", desc=True).limit(limit).execute().data or []
-    return [
-        ReportSummary(
-            id=row["id"],
-            site=_site_out(row),
-            raw_text=row["raw_text"],
-            language_detected=row["language_detected"],
-            reporter_role=row["reporter_role"],
-            submitted_at=row["submitted_at"],
-            status=row["status"],
-            classification=_classification_out(row),
-            iogp_tags=[IogpTagOut(**tag) for tag in row.get("iogp_tags") or []],
-        )
-        for row in rows
-    ]
+    return [_detail(row) for row in rows]
 
 
 @router.get("/{report_id}", response_model=ReportDetail)

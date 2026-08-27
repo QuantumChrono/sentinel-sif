@@ -13,7 +13,7 @@
  * of inferring from which page you landed on.
  */
 
-import Link from "next/link";
+import NavLink from "./NavLink";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
@@ -53,19 +53,19 @@ export function AppHeader() {
       <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-6 gap-y-2 px-6 py-3">
         <span className="font-semibold tracking-tight">SentinelSIF</span>
         <nav aria-label="Main" className="flex gap-4 text-sm">
-          <Link href="/intake" className="rounded underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900">
-            Submit report
-          </Link>
-          <Link href="/dashboard" className="rounded underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900">
-            Dashboard
-          </Link>
+        <NavLink href="/intake">
+  Submit Report
+</NavLink>
+      <NavLink href="/dashboard">
+  Dashboard
+</NavLink>
           {/* The review queue is reachable by every signed-in role. The queue is a workflow, not a
               privileged view: a site supervisor who submitted a low-confidence report is often the
               person who can say what actually happened. Whether it becomes role-gated is a decision
               for whoever owns the privilege rule, not something to assume here. */}
-          <Link href="/review" className="rounded underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900">
-            Review queue
-          </Link>
+<NavLink href="/review">
+  Review queue
+</NavLink>
         </nav>
         <div className="ml-auto flex items-center gap-3 text-sm">
           <span className="text-slate-600">
