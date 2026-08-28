@@ -14,6 +14,18 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+import os
+from pathlib import Path
+from huggingface_hub import snapshot_download
+
+# Auto-download model weights if missing locally
+_WEIGHTS_DIR = Path(__file__).parent / "model_weights"
+_HF_REPO = os.environ.get("HF_MODEL_REPO", "swayamohapatra/sentinel-sif")
+
+if not (_WEIGHTS_DIR / "sif_classifier" / "model.safetensors").exists():
+    print(f"Model weights not found locally. Auto-downloading from Hugging Face: {_HF_REPO}...")
+    snapshot_download(repo_id=_HF_REPO, local_dir=str(_WEIGHTS_DIR))
+
 from routes import analytics, reports, review, sites
 
 load_dotenv()

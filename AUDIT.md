@@ -954,3 +954,46 @@ Finding: 17 hand-written adversarial reports run through the live `/api/reports`
 3. **Span boundary jitter.** SpanRuler extraction is exact on single-noun hazards, but multi-word descriptive phrases capture adjacent tokens, so highlighted spans can run a word or two long in the UI. Separately, barrier recall is structurally bounded by the entailment-only policy — a barrier that is implied but not stated is never extracted, by design.
 
 Status: open — 1 and 2 are training-data gaps, not code bugs, and are unfixed as of Day 3. 2 is the one to state out loud in any demo Q&A about gas hazards. | Demo failure playbook for these paths: `FALLBACK.md`
+
+### [Day 3] Automated model-weight distribution via Hugging Face Hub — 2026-08-28
+Type: feature/deployment | Severity: low
+Finding: added `scripts/download_model_weights.py` and an import-time check in `backend/main.py` that
+pulls `backend/model_weights/` from the Hugging Face Hub repo `swayamohapatra/sentinel-sif` when
+`sif_classifier/model.safetensors` is absent. This routes around GitHub's 100 MB per-file limit — the
+two DistilBERT checkpoints are 257 MB each, 514 MB total, and `model_weights/` is `.gitignore`d — so a
+fresh clone reaches a running backend with no manual file transfer and no out-of-band file handoff
+from the integrator. Both paths honour `HF_MODEL_REPO` for an alternate repo.
+
+Verified, and the limits of that verification:
+
+- `HfApi().list_repo_files` on the repo returns **23 files**, including `sif_classifier/model.safetensors`,
+  `iogp_tagger/model.safetensors`, `sif_classifier/calibration.json`, `iogp_tagger/tagger_metrics.json`
+  and the full `precursor_ner/` SpanRuler tree — so every artifact the runtime loads is published, not
+  just the checkpoints.
+- A real `snapshot_download` into a scratch directory fetched `sif_classifier/calibration.json` (839 B)
+  and `precursor_ner/meta.json` (563 B) at correct sizes, confirming the repo is public and reachable
+  with no token.
+- **Not verified: a full 514 MB clean-clone download followed by a backend boot and an inference call.**
+  Only the two small files above were actually transferred. The onboarding claim rests on the file
+  listing plus a working partial download, not on an end-to-end run, and is recorded that way
+  deliberately rather than as a passing check.
+
+Defect found and fixed in the same pass: `backend/main.py` imports `huggingface_hub` at module load,
+but the package was pinned in **neither** `backend/requirements.txt` nor `scripts/requirements.txt`.
+It was present in `backend/.venv` (1.28.0) only incidentally, so the feature worked on this machine
+while a teammate following the documented steps would have hit `ModuleNotFoundError` before uvicorn
+bound a port — the auto-download would have broken the very onboarding it exists to enable. Pinned
+`huggingface_hub==1.28.0` in `backend/requirements.txt`, with a comment stating it is a runtime import
+rather than a script dependency.
+
+Also corrected while documenting, all three stale rather than wrong-by-design: README's "Honest model
+performance" block still carried the superseded 326-row figures (test n=49, F1 0.5833) against
+`calibration.json`'s current 1,688-row build (test n=252, accuracy 0.7460, F1 0.7217); the weights
+table understated `precursor_ner/` as 269 KB / 111 patterns against a measured 1.6 MB / 374 patterns
+and the total as 513 MB against 514 MB; and the Render "delivery" rationale claimed weights "cannot
+reach Render by push at all", which this feature partly supersedes — annotated in place, with the
+memory ceiling noted as the reason the decision stands regardless. README also gained the pipeline
+diagram and four-core-screen table it had never had, both checked against
+`backend/routes/reports.py` and the five `frontend/app/**/page.tsx` routes; the 8-endpoint table was
+verified line by line against the `@router` decorators and needed no change. Status: resolved
+

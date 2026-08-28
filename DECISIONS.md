@@ -482,3 +482,25 @@ Decision: `pytest==9.1.1` added to `scripts/requirements.txt` alongside the othe
 
 ### [Day 2 / Integrator] The 50/50 SIF training balance and the unrepresented Work Authorisation rule are kept and disclosed, not corrected — 2026-08-27
 Decision: the training corpus stays balanced ~50/50 on `sif_potential` against a ~20-25% field prevalence, and `Work Authorisation` stays with 0 training examples. Neither is fixed before the demo; both become disclosed limitations, and the system must not be described as covering all 9 IOGP rules. | Context: ratifies and consolidates two Lane A entries from 2026-08-26 after verifying both against the artifacts. `tagger_metrics.json` lists `Work Authorisation` under both `not_measurable` and `untrainable`, so the 9th output unit can only ever predict 0 — that is a structural fact about the checkout, not a tuning gap. The balance is a training-set property only and is carried into no dashboard denominator or rate: `/analytics/density` computes rates from actual report counts. | Alternatives: (1) re-draw the corpus at field prevalence — at 235 fitting rows the minority class decides the boundary, and ~20-25% positives leaves the heavy-noise positive stratum near single digits; (2) synthesise Work Authorisation rows — the OSHA corpus cannot supply them without fabricating narratives, which `AGENTS.md` forbids outright; (3) drop the rule from the schema — renames the canonical 9, which `PRD.md` § Glossary forbids. | Rationale: both limits are honest and cheap to state, and the alternatives are either worse modelling or fabrication. The demo consequence is a talking point rather than a defect: the tagger covers 8 of 9 rules with measurable behaviour on 5, and the chart renders all nine including zeros by design (`rule_distribution_chart.tsx`), so an untagged rule reads as a real finding rather than a hidden category.
+
+### [Day 3 / Integrator] Model weights ship from the Hugging Face Hub, not from git or a manual handoff — 2026-08-28
+`backend/model_weights/` is 514 MB with two 257 MB `model.safetensors` checkpoints, so it cannot go in
+git: GitHub's per-file limit is 100 MB, and `model_weights/` is `.gitignore`d anyway. The options were
+Git LFS, a manual file handoff from the integrator per teammate, or a public model repo. Chose the
+public HF repo `swayamohapatra/sentinel-sif`, pulled by `scripts/download_model_weights.py` and by an
+import-time check in `backend/main.py`, because it is the only one of the three where a fresh clone
+reaches a working backend with no out-of-band step and nothing for the integrator to send. Git LFS
+would need quota and still put a 514 MB fetch in every clone, including doc-only ones.
+
+**This is a change to `backend/main.py`, a FROZEN file, and this entry is the record `CLAUDE.md`
+requires.** Scope is deliberately narrow: the check runs at import, before the router imports, and
+touches no endpoint, no signature and no wiring, so no lane's contract moves. It does mean a first
+start with no weights blocks for a ~514 MB download instead of failing fast — accepted, because the
+alternative is a backend that imports cleanly and then fails on the first inference call, which is
+the exact failure mode that retired Render.
+
+Consequence worth stating: this removes **delivery** as a hosting blocker but not **memory**. Render
+stays retired on the 885 MB site-packages + 514 MB weights vs 512 MB ceiling arithmetic alone
+(2026-08-27 entry). `README.md` annotates the superseded half of that rationale in place rather than
+rewriting it, so the original reasoning stays readable.
+

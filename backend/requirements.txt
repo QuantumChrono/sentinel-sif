@@ -27,6 +27,11 @@ pyspellchecker==0.9.0  # Block 4 preprocessing spellcheck stage
 torch==2.11.0
 transformers==5.0.0
 spacy==3.8.16          # the precursor SpanRuler pipeline in model_weights/precursor_ner/
+
+# `main.py` imports this at module load to auto-download `model_weights/` on first start, so it is a
+# runtime dependency, not a script dependency. `model_weights/` is `.gitignore`d and 514 MB, over
+# GitHub's 100 MB file limit, so a fresh clone has no weights until this runs.
+huggingface_hub==1.28.0
 # scikit-learn is deliberately NOT here. `scripts/tune_confidence_threshold.py` needs it, but that
 # script is offline and `scripts/requirements.txt` already pins it. Adding it here would put
 # sklearn + scipy (163 MB measured) into a deploy that is already over its memory ceiling, to
