@@ -899,3 +899,58 @@ Finding: eight corrections applied to merged `main`, each a minimal diff, each w
 8. `frontend/app/dashboard/drill_down_modal.tsx` `catch (error)` -> bare `catch` with a comment. **Why:** the only ESLint warning in the repo; the value was never surfaced because an internal exception message is not a user-facing sentence.
 
 Verified after all eight, in one run each: `pytest` **21 passed, 1 xfailed** exit 0 · `inference.test_inference` **22/22** · `density.py` self-check **passed** · `npx tsc --noEmit` **0 errors** · `npx eslint .` **0 problems** · `npm run build` **succeeds**. `ruff` still absent, so the backend still has no linter and this pass ran none. | Status: resolved
+
+Type: metric | Severity: low
+SIF classifier (distilbert-base-uncased, seed 20260826): trained on 1222 rows from
+data/processed/train.jsonl with 214 held back for early stopping and temperature
+fitting; data/test/ read only after the checkpoint was chosen. Train-file class balance
+658 true / 778 false (45.8% positive) - no class
+weighting applied, the split needs none. HELD-OUT TEST (n=252):
+accuracy 0.7460, precision 0.7281,
+recall 0.7155, F1 0.7217. Confusion matrix
+TN 105 / FP 31 / FN 33 / TP 83. Calibration temperature 1.400 fit on validation:
+test ECE 0.0770, mean confidence 0.7567,
+53 of 252 test rows below CONFIDENCE_THRESHOLD 0.65
+(those route to the review queue). Validation F1 0.7404, validation ECE
+0.0541. Weights + tokenizer + calibration.json in /kaggle/working/model_weights/sif_classifier.
+
+Type: metric | Severity: med
+IOGP tagger (distilbert-base-uncased, 9-way sigmoid multi-label head, BCEWithLogitsLoss, seed 20260826):
+trained on 1220 rows from data/processed/train.jsonl with 216 held back for
+early stopping and threshold selection; data/test/ read only afterwards. Tag threshold
+0.20, tuned on validation (val macro-F1 0.4968). pos_weight = n_neg/n_pos per rule
+capped at 10.0x. Per-rule on the HELD-OUT TEST (n=252):
+  Bypassing Safety Controls: train 66, test 11 - P 0.2188 R 0.6364 F1 0.3256
+  Confined Space: train 8, test 2 - P 0.0000 R 0.0000 F1 0.0000 (LOW SUPPORT, unreliable)
+  Driving: train 71, test 15 - P 0.4828 R 0.9333 F1 0.6364
+  Energy Isolation: train 141, test 34 - P 0.6136 R 0.7941 F1 0.6923
+  Hot Work: train 22, test 2 - P 0.0000 R 0.0000 F1 0.0000 (LOW SUPPORT, unreliable)
+  Line of Fire: train 526, test 90 - P 0.5649 R 0.9667 F1 0.7131
+  Safe Mechanical Lifting: train 99, test 8 - P 0.1311 R 1.0000 F1 0.2319
+  Work Authorisation: train 2, test 2 - P 0.0000 R 0.0000 F1 0.0000 (LOW SUPPORT, unreliable)
+  Working at Height: train 159, test 27 - P 0.4694 R 0.8519 F1 0.6053
+MACRO-F1 0.5341, computed over the 6 rules with test support >= 3
+(['Bypassing Safety Controls', 'Driving', 'Energy Isolation', 'Line of Fire', 'Safe Mechanical Lifting', 'Working at Height']) and NOT over all 9 - an F1 over zero support is undefined, not zero.
+micro-F1 0.5784. 54/113 no-rule test rows correctly tagged with nothing.
+Unmeasurable, zero test examples: []. Untrainable, zero TRAIN examples: [].
+Do not describe this model as covering all 9 rules. Weights + tokenizer + tagger_metrics.json
+in model_weights/iogp_tagger.
+
+### [Day 3] 17-Point Empirical Stress Test & Boundary Analysis (1,688-Row Model) — 2026-08-28
+Type: test-result | Severity: med
+Finding: 17 hand-written adversarial reports run through the live `/api/reports` path against the 1,688-row-trained SIF classifier + IOGP tagger. Percentages below are the calibrated confidences the models returned on each report; they are single-report probes, not aggregate metrics — the held-out test numbers logged above remain the model's real accuracy figures.
+
+**Core strengths (4)**
+
+1. **The SIF paradox is solved.** Reports whose narrative says nobody was hurt are still flagged SIF when the energy was there. 8-ton dropped casing **79.4% SIF**, 3000 PSI hose rupture **80.5% SIF**, 4-tier scaffold collapse **77.7% SIF** — each with the relevant IOGP rule tagged above **87%**, despite the report text stating "uninjured" / "zero struck". This is the behaviour the whole product exists for: outcome-blind, energy-driven classification.
+2. **Medical drama does not fool it.** High-severity *medical* language with low *energy* is correctly rejected: kitchen slip that ended in emergency surgery **88.0% No SIF**, utility knife laceration needing stitches **82.0% No SIF**, door pinch **83.0% No SIF**. Injury severity is not being used as a proxy for SIF potential.
+3. **Heavy Hinglish holds.** A rotary-table crush written in field slang (mixed Hindi/English, site abbreviations) tagged **Energy Isolation 96%** and **Line of Fire 84%** — the tagger reads the hazard through the code-switching rather than falling back to no-rule.
+4. **High-energy separation is wide.** Crane collapse **85.1%** vs slip on a puddle **50.3%** — a 34.8-point gap, comfortably either side of the 0.65 review-queue threshold, so the two route to genuinely different places in the UI.
+
+**Known boundary limitations (3)**
+
+1. **Industrial noun bias.** Pure housekeeping reports that merely *mention* tools trip a false-positive SIF: spanners left on a workbench **70.8%**, overfull scrap bin **69.4%**. Both are above the 0.65 auto-publish threshold, so they publish as SIF without review. Cause is co-occurrence in the OSHA training corpus, where industrial tool nouns appear overwhelmingly in serious-incident text. Not fixed — would need hard-negative housekeeping rows in the training set.
+2. **Atmospheric release blindspot.** A silent H2S gas leak with no kinetic trauma is underpredicted at **86.7% No SIF** — confidently wrong, and the most safety-relevant miss in the set. Cause is the physical-trauma skew of the OSHA SIR source data: energy is encoded as impact/fall/crush, and a toxic atmosphere carries none of those signals. Any deployment in sour-gas service needs a rule-based override on gas/H2S/atmosphere keywords, not this classifier alone.
+3. **Span boundary jitter.** SpanRuler extraction is exact on single-noun hazards, but multi-word descriptive phrases capture adjacent tokens, so highlighted spans can run a word or two long in the UI. Separately, barrier recall is structurally bounded by the entailment-only policy — a barrier that is implied but not stated is never extracted, by design.
+
+Status: open — 1 and 2 are training-data gaps, not code bugs, and are unfixed as of Day 3. 2 is the one to state out loud in any demo Q&A about gas hazards. | Demo failure playbook for these paths: `FALLBACK.md`

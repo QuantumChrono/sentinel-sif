@@ -22,6 +22,11 @@ GEMINI_API_KEY is set - tried in order and rotated when one runs out of capacity
 go up BATCH_SIZE per request; each carries its own site, noise tier and mechanics, and a
 response that comes back the wrong length or out of order is retried as a whole batch.
 
+USE_TRINITY at the top routes every call to a self-hosted OpenAI-compatible endpoint instead,
+which has no quota and so needs neither the fleet nor its pacing. Setting it False restores the
+hosted path unchanged. Both backends share one request-and-validate function, so a misaligned
+batch is rejected identically either way.
+
 Usage:
   python scripts/localize_dataset.py --sample 20            -> data/sample/
   python scripts/localize_dataset.py --count 2500            -> data/processed/
@@ -39,7 +44,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import APIConnectionError, APITimeoutError, OpenAI
 
 RAW_CSV = "data/raw/January2015toNovember2025.csv"
 
@@ -148,20 +153,104 @@ BATCH_SIZE = 1  # narratives per request, in both stages. Index-matched by Pytho
 # unattended: it stops at the daily wall partway through and waits for a human. Spreading the
 # run across models is what lets it finish overnight.
 #
-# Verified present on this account on 2026-08-26, by listing /v1/models on both endpoints and
-# then issuing this script's exact call shape (json_object + max_completion_tokens) to each.
-# Three models named in earlier plans are NOT here: llama-3.1-8b-instant, llama-3.3-70b-
-# versatile and mixtral-8x7b-32768 have been withdrawn from Groq and now 404 "does not exist
-# or you do not have access to it". gemini-flash-latest is left out on purpose - it answered
-# 503 "high demand" during that same check, and a floating alias can silently change model
-# underneath an unattended run.
+# Re-verified on this account on 2026-08-28, by listing /v1/models on both endpoints and then
+# issuing this script's exact call shape (json_object + max_completion_tokens) to every listed
+# text model. A 429 counts as verified access, not a failure: it proves the model resolves on
+# this key and only its per-minute window was spent at probe time, which is the same condition
+# rotation exists to ride out. A 404 or "decommissioned" is what disqualifies a name.
+#
+# Withdrawn from Groq, confirmed again by 404/decommissioned: llama-3.1-8b-instant,
+# llama-3.3-70b-versatile, qwen/qwen3-32b, moonshotai/kimi-k2-instruct, mixtral-8x7b-32768,
+# deepseek-r1-distill-llama-70b. Gemini 1.5 and 2.x are likewise gone from this key.
+#
+# Four models that answered 200 are still left out, because reaching the fleet takes more than
+# a successful HTTP call:
+#   allam-2-7b            - Arabic-tuned. Returned valid JSON containing pseudo-Hinglish word
+#                           salad ("woh trimester mein qrit karne laye jata tha"). A model can
+#                           pass the transport check and fail the actual task.
+#   groq/compound(-mini)  - not separate capacity. compound-mini's own 429 body named
+#                           `openai/gpt-oss-120b`, so these route to the gpt-oss models already
+#                           listed below and draw down the same quota they would fall back to.
+#   gemini-robotics-er-*  - embodied-reasoning models. Untested on prose and the wrong tool.
+# Floating aliases (gemini-flash-latest, gemini-flash-lite-latest, gemini-pro-latest) stay out
+# for the reason they always did: an alias can change model underneath an unattended run.
+#
+# gpt-oss-safeguard-20b is a safety-classifier variant of the 20b, so the thing worth checking
+# was refusal, not capacity: this dataset is entirely injuries and fatalities. It was given a
+# fatal crushing narrative twice and both times returned clean Hinglish with no refusal and no
+# moralizing, so it is in. If refusals ever do appear mid-run they arrive as a bad batch, which
+# spends attempts without rotating - drop this name here rather than widening is_exhausted.
 #
 # gpt-oss-20b stays first because the prompts were measured against it. The rest are capacity
 # fallbacks, not equals: prose quality across models is unverified, so rows produced after a
-# rotation are worth a spot-check before they are trusted.
-GROQ_MODELS = ["openai/gpt-oss-20b", "openai/gpt-oss-120b",
+# rotation are worth a spot-check before they are trusted. The Gemini entries were spot-checked
+# on one real narrative and returned clean Hinglish; full-size flash leads the lite variants,
+# whose prose is thinner.
+GROQ_MODELS = ["openai/gpt-oss-20b", "openai/gpt-oss-120b", "openai/gpt-oss-safeguard-20b",
                "qwen/qwen3.8-27b", "qwen/qwen3.6-27b"]
-GEMINI_MODELS = ["gemini-3.7-flash", "gemini-3.5-flash"]
+GEMINI_MODELS = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash",
+                 "gemini-3-flash-preview", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
+
+# Project Trinity: a self-hosted OpenAI-compatible endpoint (30GB VRAM), reached over a
+# Cloudflare tunnel. Flip USE_TRINITY to False and everything below behaves exactly as the
+# hosted run does - the fleet, the rotation and the 429 pacing are bypassed, not removed.
+#
+# Bypassed rather than added to the fleet because Trinity has no quota: rotation, the 4s Groq
+# pacing sleep and the retry_delay backoff all exist to survive a tokens-per-minute cap that
+# does not apply here, and leaving them in place would only slow a run that has nothing to
+# wait for. What Trinity does have is a tunnel that drops, which is a different failure with a
+# different answer: wait for it to come back (see call_llm_trinity), never fall back.
+#
+# The URL is a trycloudflare quick tunnel, so it changes every time the tunnel restarts.
+USE_TRINITY = False
+TRINITY_BASE_URL = "https://pan-magazines-limitations-america.trycloudflare.com/v1"
+# The non-thinking 7B, served on port 8081 behind the tunnel.
+#
+# This is the second switch, and it reverses the first. The 9B that replaced this model
+# (trinity-chat-vision, port 8082) spent its budget inside hidden <think> tags and left too
+# little for the JSON, so raising max_tokens funded the thinking rather than the answer. A
+# non-thinking model spends the whole ceiling on visible output.
+#
+# Note what this model was moved away from, because it has not changed: left alone it runs
+# past the closing brace and keeps writing prose. temperature 0.1 in TRINITY_PARAMS is what
+# holds that down, and extract_json_object drops what gets through. If the JSON comes back
+# clean but the Hinglish reads repetitive, that is this pairing's known cost - raise the
+# temperature and let the parser absorb the trailing prose.
+TRINITY_MODEL = "trinity-talk"
+# Attempts for a response Trinity *answered* but the validator rejected. 5 matches the
+# hosted path's budget for a one-model fleet. Unreachable is not counted here - that
+# retries without limit, see call_llm_trinity.
+TRINITY_BAD_BATCH_ATTEMPTS = 5
+
+# The one call's tuning, per backend. Kept apart so Trinity's values cannot reach the hosted
+# fleet, whose 1.0/4000 the prompts were measured against.
+#
+# max_tokens, not max_completion_tokens: Trinity's values replace the hosted key rather than
+# joining it, because the two are different fields and sending both leaves which one caps the
+# response up to whatever the local server prefers.
+#
+# 1200, raised from 600 on 2026-08-28 because 600 was the JSONDecodeError. The Kaggle logs put
+# Trinity at 30.5 tok/s over a 21s call, which is ~640 generated tokens - i.e. the response was
+# running into the cap, not rambling past a finished object. A cut-off response fails parsing
+# and spends a bad-batch attempt, so this is a ceiling to raise if truncation persists, not a
+# target to tighten; there is room to, since the hosted path's measured ceiling is 4000.
+#
+# 1200 buys more here than it did on the 9B: a non-thinking model spends none of it on hidden
+# reasoning, so the whole ceiling reaches the JSON. Sized for BATCH_SIZE = 1; N narratives per
+# request would need roughly N times this.
+#
+# temperature 0.1 buys clean JSON at the cost of variety in the prose (see the note in
+# call_llm_trinity). Raise this first if the generated Hinglish starts repeating itself.
+TRINITY_PARAMS = {"temperature": 0.1, "max_tokens": 1200}
+FLEET_PARAMS = {"temperature": 1.0, "max_completion_tokens": 4000}
+
+# Built here, once, so every batch reuses one connection pool. timeout is 600s, not the hosted
+# fleet's 60s: on a hosted endpoint 60s means "stalled", but a local 30GB box generating 4,000
+# tokens can legitimately take minutes, and a timeout there would discard finished work.
+# max_retries=0 for the same reason as the fleet's - call_llm_trinity is the single retry
+# authority, and an SDK-internal retry would hide the tunnel drop it needs to see.
+TRINITY_CLIENT = (OpenAI(base_url=TRINITY_BASE_URL, api_key="trinity-local",
+                         timeout=600.0, max_retries=0) if USE_TRINITY else None)
 
 # ---------------------------------------------------------------------------
 # STAGE 1 - prose only. This prompt must never mention IOGP rules or precursors:
@@ -591,54 +680,151 @@ def retry_delay(error, attempt):
     return 2 ** attempt + random.random()
 
 
-def call_llm_batch(fleet, prompt, count, required_field=None):
-    """One JSON batch request, with retries. Returns (results, prompt_tokens, completion_tokens).
+def extract_json_object(text):
+    """The JSON object in `text`: everything from the first { to the last }.
 
-    Shared by both stages: the failure modes are identical, and a misaligned response is as
-    fatal in stage 2 as in stage 1. The response is accepted only if it holds one result per
-    input, each self-labelled with the index it describes - a short, long, or reordered batch
-    raises and the whole batch is retried, because a silently shifted result would attach one
-    report's spans or narrative to another report's SIF label.
+    Defensive, and a no-op on a well-formed response, which is why it runs for both backends
+    rather than only for Trinity: the hosted fleet honours response_format and returns a bare
+    object, so one parse path stays cheaper than two. Trinity's local server accepts
+    response_format and then ignores it, which is what this exists for - it prefaces the object
+    with conversational text, or wraps it in a ```json fence. Both are outside the braces, so
+    both are dropped here and no separate fence handling is needed.
 
-    Attempts are budgeted so a full pass over the fleet is always possible before a batch is
-    given up on, while a one-model fleet keeps the five attempts this loop was measured with.
+    Greedy to the LAST } on purpose: every response this script asks for nests objects inside
+    `results`, so stopping at the first } would truncate all of them. The cost is that a } in
+    trailing prose is swallowed too, which yields a parse error the caller retries rather than
+    silently wrong data.
+
+    A truncated response cannot be rescued here and is not meant to be: its outermost object
+    never closes, so the last } found is an inner one, the result fails json.loads, and the
+    caller retries. Truncation is fixed at max_tokens, not at the parser.
     """
+    match = re.search(r"\{[\s\S]*\}", text or "")
+    # No braces at all means the model answered with prose only. Returned as-is so the parse
+    # error quotes what actually came back, instead of an empty string that says nothing.
+    return match.group(0) if match else (text or "").strip()
+
+
+def request_batch(client, model, prompt, count, required_field=None):
+    """One JSON batch request, no retries. Returns (results, prompt_tokens, completion_tokens).
+
+    Shared by both stages and by both backends: the failure modes are identical, and a
+    misaligned response is as fatal in stage 2 as in stage 1, on Trinity as on Groq. The
+    response is accepted only if it holds one result per input, each self-labelled with the
+    index it describes - a short, long, or reordered batch raises, because a silently shifted
+    result would attach one report's spans or narrative to another report's SIF label.
+
+    Every failure leaves this function as an exception; deciding whether to rotate, wait or
+    give up belongs to the caller, which is the only part that differs between backends.
+    """
+    # Keyed off the model name, the same way the pacing sleep below is. FLEET_PARAMS carries
+    # the hosted path's measured 1.0/max_completion_tokens=4000: gpt-oss-120b is a reasoning
+    # model, and a measured trivial call spent 91 of its 144 completion tokens on hidden
+    # reasoning. A batch plus that overhead overran the endpoint's default ceiling and
+    # truncated the JSON mid-document, which arrives as a 400 json_validate_failed or a short
+    # results array. That ceiling is raised rather than reasoning_effort lowered, because the
+    # reasoning is what strips US context and tells a barrier from an outcome.
+    response = client.chat.completions.create(
+        model=model,
+        response_format={"type": "json_object"},
+        messages=[{"role": "user", "content": prompt}],
+        **(TRINITY_PARAMS if model == TRINITY_MODEL else FLEET_PARAMS),
+    )
+    # Parsing and validation raise from inside this function so the caller's retry covers
+    # them too: a truncated or misaligned batch is as retryable as a 429, and neither may
+    # reach the .jsonl half-accepted.
+    body = extract_json_object(response.choices[0].message.content)
+    results = json.loads(body)["results"]
+    if len(results) != count:
+        raise ValueError(f"asked for {count} results, got {len(results)}")
+    for offset, result in enumerate(results):
+        if result.get("index") != offset + 1:
+            raise ValueError(
+                f"result at position {offset} claims index {result.get('index')!r}")
+        if required_field and not str(result.get(required_field) or "").strip():
+            raise ValueError(f"result {offset + 1} has no {required_field}")
+    usage = response.usage
+    if model in GROQ_MODELS:
+        # Trinity never reaches this: TRINITY_MODEL is not in GROQ_MODELS, and a local
+        # model has no per-minute window to pace against.
+        # Pace, don't burst: back-to-back calls stack inside one 8,000/min window and
+        # 429 within a couple of rows. 4s takes the edge off that burst, but it does NOT
+        # keep a single model under the cap - at a measured ~5,000 tokens per call, one
+        # model sustains only ~1.6 calls/min, so staying under by pacing alone would
+        # need ~37s here. Fleet rotation, not this sleep, is what lets a run progress;
+        # this only reduces how often rotation is triggered. Raise it if 429s dominate.
+        time.sleep(4)
+    return results, usage.prompt_tokens, usage.completion_tokens
+
+
+def is_tunnel_down(error):
+    """True if `error` means Trinity could not be reached, rather than answered badly.
+
+    A Cloudflare quick tunnel drops when the Kaggle notebook backing it restarts, and comes
+    back at the same URL. That is worth waiting out; a malformed response is not, so the two
+    are told apart and only this one retries without limit. Any 5xx counts, not just 502/503:
+    Cloudflare also serves 520-530 for its own origin errors, and enumerating them invites the
+    one that was missed to look like a bad batch and burn the batch's attempt budget.
+    """
+    if isinstance(error, (APIConnectionError, APITimeoutError)):
+        return True
+    status = getattr(error, "status_code", None)
+    return isinstance(status, int) and status >= 500
+
+
+def call_llm_trinity(prompt, count, required_field=None):
+    """call_llm_batch's body for USE_TRINITY: one local model, no rotation, no pacing.
+
+    Trinity has no quota, so nothing here waits on purpose - the 4s Groq pacing sleep and the
+    retry_delay backoff both exist to survive a tokens-per-minute cap that does not apply, and
+    a tunnel drop is not answered by backing off from a server that is simply absent.
+
+    Retries split by cause. Unreachable retries forever at 10s, because the tunnel returning is
+    a matter of when, and giving up would fail rows a wait would have completed. A response the
+    validator rejects retries only TRINITY_BAD_BATCH_ATTEMPTS times and then raises: a model
+    that cannot produce this schema will not start, and an unbounded loop there would hang the
+    whole run instead of letting the .jsonl checkpoint carry the batch to a later attempt.
+
+    Those retries are weaker than they look, because TRINITY_PARAMS sets temperature 0.1. At the
+    hosted path's 1.0 a re-issued batch is a genuinely different sample and often succeeds; near
+    0 the model returns almost the same response, so five attempts at a truncation or a schema
+    miss are close to five copies of one failure. Read a batch that exhausts them as "this
+    prompt does not fit in max_tokens" or "this model cannot hold the schema", not as bad luck,
+    and change the ceiling or the temperature rather than the attempt count.
+    """
+    bad_batches = 0
+    while True:
+        try:
+            return request_batch(TRINITY_CLIENT, TRINITY_MODEL, prompt, count, required_field)
+        except Exception as error:
+            if is_tunnel_down(error):
+                # No attempt counter on purpose: see the docstring. Ctrl-C is the way out.
+                print(f"  Trinity unreachable: {type(error).__name__}: {error}")
+                print("  waiting 10s for the tunnel, NOT falling back to Groq/Gemini")
+                time.sleep(10)
+                continue
+            bad_batches += 1
+            if bad_batches >= TRINITY_BAD_BATCH_ATTEMPTS:
+                raise
+            print(f"  retry {bad_batches}/{TRINITY_BAD_BATCH_ATTEMPTS - 1} on "
+                  f"{TRINITY_MODEL}: {type(error).__name__}: {error}")
+
+
+def call_llm_batch(fleet, prompt, count, required_field=None):
+    """One batch through whichever backend is configured, with retries.
+
+    USE_TRINITY routes to the self-hosted model and returns before `fleet` is ever read, so the
+    rotation below is bypassed rather than altered. With USE_TRINITY False this is exactly the
+    hosted path it always was: attempts are budgeted so a full pass over the fleet is always
+    possible before a batch is given up on, while a one-model fleet keeps the five attempts
+    this loop was measured with.
+    """
+    if USE_TRINITY:
+        return call_llm_trinity(prompt, count, required_field)
     for attempt in range(len(fleet) + 4):
         client, model = fleet[0]
         try:
-            response = client.chat.completions.create(
-                model=model, temperature=1.0,
-                response_format={"type": "json_object"},
-                # gpt-oss-120b is a reasoning model: a measured trivial call spent 91 of its
-                # 144 completion tokens on hidden reasoning. A batch plus that overhead
-                # overran the endpoint's default ceiling and truncated the JSON mid-document,
-                # which arrives as a 400 json_validate_failed or a short results array. The
-                # ceiling is raised rather than reasoning_effort lowered, because the
-                # reasoning is what strips US context and tells a barrier from an outcome.
-                max_completion_tokens=4000,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            # Parsing and validation sit inside the retry: a truncated or misaligned batch is
-            # as retryable as a 429, and neither may reach the .jsonl half-accepted.
-            results = json.loads(response.choices[0].message.content)["results"]
-            if len(results) != count:
-                raise ValueError(f"asked for {count} results, got {len(results)}")
-            for offset, result in enumerate(results):
-                if result.get("index") != offset + 1:
-                    raise ValueError(
-                        f"result at position {offset} claims index {result.get('index')!r}")
-                if required_field and not str(result.get(required_field) or "").strip():
-                    raise ValueError(f"result {offset + 1} has no {required_field}")
-            usage = response.usage
-            if model in GROQ_MODELS:
-                # Pace, don't burst: back-to-back calls stack inside one 8,000/min window and
-                # 429 within a couple of rows. 4s takes the edge off that burst, but it does NOT
-                # keep a single model under the cap - at a measured ~5,000 tokens per call, one
-                # model sustains only ~1.6 calls/min, so staying under by pacing alone would
-                # need ~37s here. Fleet rotation, not this sleep, is what lets a run progress;
-                # this only reduces how often rotation is triggered. Raise it if 429s dominate.
-                time.sleep(4)
-            return results, usage.prompt_tokens, usage.completion_tokens
+            return request_batch(client, model, prompt, count, required_field)
         except Exception as error:  # exhausted model / transient 5xx / bad batch - retry
             # A per-day quota is not transient: no backoff inside this run can clear it, and
             # every attempt spends another request. With no other model to move to, fail the
@@ -802,6 +988,52 @@ def verify_rule():
          is_exhausted(ValueError("asked for 5 results, got 4")), False),
         ("exhausted ignores timeout", is_exhausted(FakeError("Request timed out")), False),
     ]
+    # The extractor must find the object under any preamble or fence and must not corrupt a
+    # clean response, since it runs on the hosted path's output too. The greedy match to the
+    # last } is asserted directly: stopping at the first } would truncate every nested object
+    # in `results`, which is the shape both stages actually return.
+    checks += [
+        ("json finds under fence",
+         extract_json_object('```json\n{"a": 1}\n```'), '{"a": 1}'),
+        ("json finds under preamble",
+         extract_json_object('Sure! Here is the JSON:\n\n{"a": 1}'), '{"a": 1}'),
+        ("json drops trailing prose",
+         extract_json_object('```json\n{"a": 1}\n```\nHope that helps!'), '{"a": 1}'),
+        ("json keeps nested objects",
+         extract_json_object('{"results": [{"index": 1}]}'), '{"results": [{"index": 1}]}'),
+        ("json passes clean json", extract_json_object('{"a": 1}'), '{"a": 1}'),
+        # Truncation is not rescued here, by design: the outer object never closed, so what
+        # comes back cannot parse and the caller retries. The fix for this is max_tokens.
+        ("json leaves truncated body",
+         extract_json_object('```json\n{"a": 1'), '```json\n{"a": 1'),
+        ("json leaves prose only",
+         extract_json_object('I cannot do that.'), 'I cannot do that.'),
+        # The documented cost of matching to the LAST }: a brace in trailing prose is swallowed
+        # too. That yields a parse error the caller retries, never silently wrong data.
+        ("json overreaches past prose brace",
+         extract_json_object('{"a": 1}\ndone {ok}'), '{"a": 1}\ndone {ok}'),
+        ("json passes empty", extract_json_object(""), ""),
+        ("json passes none", extract_json_object(None), ""),
+    ]
+
+    # Trinity's two failures must not be confused: an unreachable tunnel retries forever, so
+    # reading a bad batch as unreachable would hang the run, and reading a dropped tunnel as a
+    # bad batch would fail rows that a 10s wait would have completed.
+    checks += [
+        ("tunnel down reads 502", is_tunnel_down(FakeError("Bad gateway", 502)), True),
+        ("tunnel down reads 503", is_tunnel_down(FakeError("unavailable", 503)), True),
+        ("tunnel down reads 530", is_tunnel_down(FakeError("origin unreachable", 530)), True),
+        # request=None: these carry no status_code, so the isinstance branch is what is being
+        # asserted, and the SDK only stores the request without reading it.
+        ("tunnel down reads timeout", is_tunnel_down(APITimeoutError(request=None)), True),
+        ("tunnel down reads no connection",
+         is_tunnel_down(APIConnectionError(request=None)), True),
+        ("tunnel down ignores bad batch",
+         is_tunnel_down(ValueError("asked for 1 results, got 0")), False),
+        ("tunnel down ignores 400", is_tunnel_down(FakeError("json_validate_failed", 400)), False),
+        ("tunnel down ignores 429", is_tunnel_down(FakeError("Rate limit", 429)), False),
+    ]
+
     order = [("client", "first"), ("client", "second"), ("client", "third")]
     rotate_fleet(order)
     checks += [("fleet rotates to next", order[0][1], "second"),
@@ -853,8 +1085,17 @@ def main():
 
     load_dotenv("scripts/.env")
     load_dotenv("backend/.env")
-    fleet = build_fleet(args.model)
-    print(f"fleet: {' -> '.join(model for _, model in fleet)}")
+    if USE_TRINITY:
+        # build_fleet is not called at all: it raises SystemExit without a Groq or Gemini key,
+        # and a Trinity run legitimately has neither.
+        if args.model:
+            parser.error("--model pins a model in the Groq/Gemini fleet, which USE_TRINITY "
+                         "bypasses. Set USE_TRINITY = False to use it.")
+        fleet = None
+        print(f"backend: Project Trinity {TRINITY_MODEL} at {TRINITY_BASE_URL}")
+    else:
+        fleet = build_fleet(args.model)
+        print(f"fleet: {' -> '.join(model for _, model in fleet)}")
 
     print(f"applying LABELING_RULE.md to {RAW_CSV} ...")
     frame = load_labeled_frame()
